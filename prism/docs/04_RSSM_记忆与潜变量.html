@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · RSSM：记忆 h 与潜变量 z（图解）</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#fff; --ink:#22303f; --muted:#6b7c8d;
+    --line:#e4e9ef; --r:#e74c3c; --g:#27ae60; --b:#3498db;
+    --hl:#f5b041; --pp:#8e44ad; --accent:#2d7ff9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.75}
+  .wrap{max-width:1020px;margin:0 auto;padding:34px 20px 90px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 26px;margin-bottom:20px}
+  h2{font-size:19px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{display:inline-block;min-width:27px;height:27px;line-height:27px;text-align:center;
+          background:var(--accent);color:#fff;border-radius:8px;font-size:14px;margin-right:9px}
+  h3{font-size:15px;margin:20px 0 8px;color:#34495e}
+  p{color:#3c4c5c;margin:10px 0}
+  .note{background:#eef6ff;border-left:4px solid var(--accent);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .key{background:#fff8e6;border-left:4px solid var(--hl);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .warn{background:#fdecea;border-left:4px solid var(--r);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .ok{background:#eafaf1;border-left:4px solid var(--g);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .cap{text-align:center;color:var(--muted);font-size:13px;margin-top:10px}
+  table{border-collapse:collapse;margin:12px auto;font-size:14px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 13px;text-align:left}
+  th{background:#f4f6f8;color:#34495e}
+  code{background:#f4f6f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  ul{padding-left:20px;font-size:14px}
+  li{margin:5px 0}
+  svg{display:block;margin:0 auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>RSSM：记忆 h 与潜变量 z</h1>
+  <p class="sub">PRISM-WM 笔记 04 · 图解版 · 数字可用 <code>python prism/docs/demo_04_rssm.py</code> 复现</p>
+
+  <div style="background:#fff;border:1px solid #e4e9ef;border-radius:14px;padding:16px 22px;margin-bottom:20px;font-size:14px">
+    <b>学习进度（讲到哪了）</b>
+    <table style="margin-top:8px">
+      <tr><th>笔记</th><th>内容</th><th>状态</th></tr>
+      <tr><td>01</td><td>一帧 → Encoder → 256 维 emb</td><td>✅</td></tr>
+      <tr><td>02</td><td>卷积 / 拉平 / 全连接（手算）</td><td>✅</td></tr>
+      <tr><td>03</td><td>通道数从哪来（kernel 个数）</td><td>✅</td></tr>
+      <tr><td rowspan="6">04<br>RSSM</td><td>衔接：emb 的两个去处</td><td>✅</td></tr>
+      <tr><td>GRU = 会自己调 alpha 的 Lerp</td><td>✅</td></tr>
+      <tr><td>posterior = 输出「答案 + 不确定度」</td><td>✅</td></tr>
+      <tr><td>维度账：456 → 64 → mu/logvar → std → z(32)</td><td>✅</td></tr>
+      <tr><td>z 出来之后去哪（三条路）</td><td>✅</td></tr>
+      <tr><td><b>路①：z 往未来走 —— 交给 GRU</b></td><td><b>← 当前</b></td></tr>
+      <tr><td style="padding-left:26px;color:#c0392b">· 易错点：raw_z 的范围不代表受限制</td><td>✅</td></tr>
+      <tr><td style="padding-left:26px;color:#c0392b">· 易错点：h' 里为什么看不到 r</td><td>✅</td></tr>
+      <tr><td><b>路②③：往当前预测走（obs_pred / proprio_pred）</b></td><td><b>← 当前</b></td></tr>
+      <tr><td>prior（和 posterior 的唯一区别）</td><td>⬜</td></tr>
+    </table>
+    <div style="margin-top:10px;color:#6b7c8d">待讲：loss 四项 · imagine()（做梦）· 训练循环</div>
+  </div>
+
+  <!-- 0 -->
+  <section>
+    <h2><span class="num">0</span>一句话</h2>
+    <p>RSSM 每帧只做两件事：<b>更新记忆 h</b>，以及<b>对"世界现在是什么样"给出判断 z</b>。</p>
+    <div class="key">前面 01~03 讲的 Encoder 只是把一帧变成 256 个数字（<code>emb</code>）。
+      <b>RSSM 才是"世界模型"本身</b>——它负责把这些数字在时间上串起来。</div>
+  </section>
+
+  <!-- 衔接 -->
+  <section>
+    <h2><span class="num" style="background:#27ae60">衔</span>衔接：emb 出来之后去哪</h2>
+
+    <h3>先纠正一个印象：emb 不是一个，是一串</h3>
+    <p>01~03 讲的是「<b>一帧</b>怎么变成 256 个数字」。但训练时喂进去的是<b>一段序列</b>（32 帧），
+       所以 Encoder 会跑 32 次，得到 <b>32 个</b> 256 维向量：</p>
+    <table>
+      <tr><th>写法</th><th>含义</th></tr>
+      <tr><td><code>emb[0]</code></td><td>第 0 帧的摘要（256 个数）</td></tr>
+      <tr><td><code>emb[1]</code></td><td>第 1 帧的摘要</td></tr>
+      <tr><td>…</td><td>…</td></tr>
+      <tr><td><code>emb[31]</code></td><td>第 31 帧的摘要</td></tr>
+    </table>
+    <p>整段堆起来就是 <code>emb</code>，形状 <code>(32, 1, 256)</code> = （时间, batch, 维度）。</p>
+
+    <h3>emb 有两个角色（这是衔接的关键）</h3>
+    <table>
+      <tr><th>角色</th><th>去哪</th><th>干什么</th></tr>
+      <tr><td><b>A. 修正记忆</b></td><td>和 h 一起进 <code>posterior</code></td><td>把"当前看到了什么"注入，得到这一帧的判断 z</td></tr>
+      <tr><td><b>B. 当老师</b></td><td>作为 <code>emb_pred</code> 的目标</td><td>模型猜的摘要要逼近它 —— <b>这就是监督信号</b>（下一小点讲 loss）</td></tr>
+    </table>
+
+    <h3>两个去处，一张图看清</h3>
+    <div id="embGo"></div>
+    <div class="cap">emb[t] 只有两条出路：<b>向右上进 posterior</b>、<b>向右下当比较目标</b>。它<b>不向左</b>（不进 GRU）</div>
+
+    <h3>逐个维度的走法（第 t 帧）</h3>
+    <table>
+      <tr><th>步骤</th><th>操作</th><th>维度变化</th></tr>
+      <tr><td>①</td><td>取出 <code>emb[t]</code></td><td>256</td></tr>
+      <tr><td>②</td><td>和 <code>h[t]</code> 拼起来进 posterior</td><td>200 + 256 = <b>456</b></td></tr>
+      <tr><td>③</td><td>posterior 输出均值和方差，采样出 <code>z[t]</code></td><td>456 → 64 → <b>32</b></td></tr>
+      <tr><td>④</td><td><code>(h[t], z[t])</code> 进 obs_pred，猜出 <code>emb_pred[t]</code></td><td>232 → <b>256</b></td></tr>
+      <tr><td>⑤</td><td>拿 <code>emb_pred[t]</code> 和 <code>emb[t]</code> 比一比</td><td>算出 <b>loss</b></td></tr>
+      <tr><td>⑥</td><td>顺带把 <code>emb_pred[t]</code> 送进 Decoder 还原成图</td><td>256 → <b>(3,64,64)</b></td></tr>
+    </table>
+
+    <h3>别扭的地方：emb 既是输入又是答案？</h3>
+    <p>你可能会觉得这是作弊——先把它塞进 posterior，再要求还原出它。关键在于<b>中间有个窄门</b>：</p>
+    <div class="key"><b>emb 是 256 维，而 z 只有 32 维。</b><br>
+      信息必须先挤过 32 维的窄门，再被还原成 256 维 ——
+      模型被迫学会「<b>什么才是真正重要的</b>」。<br>
+      这就像 JPEG：原图进去，压缩再解压，要求还原得尽量像。瓶颈逼着它丢掉无关细节。</div>
+    <p>但<b>真正的"预测"能力不来自这条重建路径，而来自 prior</b>：</p>
+    <table>
+      <tr><th>场景</th><th>z 从哪来</th><th>emb_pred 的性质</th></tr>
+      <tr><td>训练时</td><td>posterior（看了图）</td><td><b>重建</b>当前帧（练表征）</td></tr>
+      <tr><td>想象时</td><td>prior（不看图）</td><td><b>预测</b>未来帧（这才是世界模型）</td></tr>
+    </table>
+    <p>而 <code>KL</code> 那一项的作用，就是逼 prior 尽量接近 posterior ——
+       于是"不看图"的时候也能猜得八九不离十。</p>
+
+    <div class="warn"><b>最容易搞错的一点：emb 不进 GRU。</b><br>
+      时间上是<b>错开</b>的：第 t 步的 GRU 吃的是 <code>z[t-1]</code>（<b>上一帧</b>的判断），
+      而 <code>emb[t]</code>（当前帧）只进 posterior。<br>
+      所以图像信息是<b>通过 z 间接影响记忆</b>的，不是直接灌进去的。</div>
+
+    <h3>时间展开图：连续三步怎么串起来</h3>
+    <div id="unroll"></div>
+    <div class="cap">每个时间步：图 → emb →（和 h 一起）posterior → z；z 再传给<b>下一帧</b>的 GRU</div>
+
+    <div class="key"><b>把整条链路连起来说一遍：</b><br>
+      ① 32 帧图像 → Encoder → 32 个 emb（每个 256 维）<br>
+      ② 从 t=0 开始循环：GRU 拿「上一帧的 z + 动作 + 本体」更新出 h[t]<br>
+      ③ h[t] 和 emb[t] 一起进 posterior，得到 z[t]<br>
+      ④ (h[t], z[t]) 去预测 emb（目标就是 emb[t] 本身）<br>
+      ⑤ z[t] 传给下一帧，回到 ②</div>
+  </section>
+
+  <!-- posterior -->
+  <section>
+    <h2><span class="num" style="background:#8e44ad">后</span>posterior 到底是什么</h2>
+
+    <h3>一句话</h3>
+    <p>posterior 是一个<b>很小的网络</b>，它输出的不是「一个答案」，而是<b>一个分布</b>——
+       也就是「我猜是这个值」<b>加上</b>「我有多不确定」。</p>
+
+    <h3>先解释名字：先验 / 后验</h3>
+    <table>
+      <tr><th>名字</th><th>字面意思</th><th>输入</th></tr>
+      <tr><td><b>先验 prior</b></td><td>看这张图<b>之前</b>的判断</td><td>只有记忆 h</td></tr>
+      <tr><td><b>后验 posterior</b></td><td>看完这张图<b>之后</b>的判断</td><td>记忆 h + 当前图像 emb</td></tr>
+    </table>
+    <p>就这么简单：<b>「后」= 看过数据之后</b>。</p>
+
+    <h3>它的结构（只有 2 层）</h3>
+    <p><code>post_net</code> = <code>Linear(456 → 200)</code> → <code>ELU</code> → <code>Linear(200 → 64)</code></p>
+    <table>
+      <tr><th></th><th>维度</th><th>说明</th></tr>
+      <tr><td>输入</td><td>456</td><td><code>cat(h, emb)</code> = 200 + 256</td></tr>
+      <tr><td>输出</td><td>64</td><td>拆成两半：<code>mu(32)</code> + <code>logvar(32)</code></td></tr>
+    </table>
+
+    <h3>输出的两个东西</h3>
+    <table>
+      <tr><th>输出</th><th>维度</th><th>含义</th><th>UE 类比</th></tr>
+      <tr><td><code>mu</code></td><td>32</td><td>最可能的判断</td><td>目标最可能的位置</td></tr>
+      <tr><td><code>logvar → std</code></td><td>32</td><td>不确定度（越大越没把握）</td><td>误差半径 / 置信范围</td></tr>
+    </table>
+    <div class="note"><b>64 维是怎么分的</b>：前 32 个是 <code>mu</code>，后 32 个是 <code>logvar</code>
+       （代码 <code>post.chunk(2, dim=-1)</code> 把 64 平均切成两块）。<br>
+       <code>std</code> <b>不在输出里</b> —— 它是由 <code>std = exp(0.5 × logvar)</code>
+       <b>算出来的派生量</b>，不占维度。<br>
+       类比：描述一个高斯只需要「均值 + 方差」两个数，标准差是现算的，不用单独给。</div>
+
+    <p>采样公式（就两行）：</p>
+    <table>
+      <tr><th>公式</th><th>说明</th></tr>
+      <tr><td><code>std = exp(0.5 × logvar)</code></td><td>把 logvar 变回标准差</td></tr>
+      <tr><td><code>z = mu + std × 随机噪声</code></td><td>在 mu 附近按 std 掷骰子</td></tr>
+    </table>
+
+    <p>手算一个小例子（2 维，脚本可验证）：</p>
+    <table>
+      <tr><th>量</th><th>值</th></tr>
+      <tr><td><code>mu</code></td><td><code>[1.0, -0.5]</code></td></tr>
+      <tr><td><code>logvar</code></td><td><code>[-2.0, 0.0]</code></td></tr>
+      <tr><td><code>std</code></td><td><code>[0.3679, 1.0]</code></td></tr>
+      <tr><td>随机噪声</td><td><code>[0.5, -1.2]</code></td></tr>
+      <tr><td><b>z</b></td><td><b>[1.1839, -1.7]</b>　（1.0 + 0.3679×0.5 ；−0.5 + 1.0×(−1.2)）</td></tr>
+    </table>
+
+    <h3>为什么输出「分布」，而不是直接给个数</h3>
+    <p>因为<b>同一张画面可能对应多种真实状态</b>。比如方块被挡住一半——
+       它的确切位置是不确定的。用分布，模型就能表达「我没把握」。</p>
+    <div id="gauss"></div>
+    <div class="cap">同样的 mu，std 越大 → 采样结果越分散 = 越不确定</div>
+
+    <h3>std 的作用：实测（mu 固定为 0，只改 std，各采样 6 次）</h3>
+    <table>
+      <tr><th>logvar</th><th>std</th><th>6 次采样结果</th><th>含义</th></tr>
+      <tr><td>−4.0</td><td>0.135</td><td><code>[0.05, 0.02, 0.03, 0.03, −0.15, −0.03]</code></td><td>几乎确定（都挤在 0 附近）</td></tr>
+      <tr><td>0.0</td><td>1.000</td><td><code>[2.21, −0.64, 0.46, 0.27, 0.53, 0.81]</code></td><td>中等</td></tr>
+      <tr><td>+2.0</td><td>2.718</td><td><code>[3.02, −4.59, −2.69, 2.6, 3.59, 2.22]</code></td><td>很不确定（散得很开）</td></tr>
+    </table>
+    <div class="key"><b>理想情况</b>：画面清楚时 std 应该<b>小</b>（很确定方块在哪）；
+       被遮挡时 std 应该<b>大</b>（没把握，只能给个大概范围）。<br>
+       <span style="color:#6b7c8d">（当前是未训练模型，std 还是随机的；训练后它才会真正学会表达不确定性）</span></div>
+
+    <h3>小细节：为什么输出 logvar 而不是 std</h3>
+    <p>std 必须大于 0，如果让网络直接输出 std，就得额外加约束，不好优化。<br>
+       改成输出 <code>logvar</code>：它可以是<b>任意实数</b>（正负都行），
+       再 <code>exp</code> 一下自然变回正数 —— 数值稳定得多。</p>
+
+    <p>32 维里<b>每一维都有自己独立的 mu 和 std</b>。实测范围：<br>
+       <code>mu ∈ [-0.61, 0.31]</code>，<code>std ∈ [0.84, 1.31]</code>（未训练）。</p>
+    <p>自己跑：<code>python prism/docs/demo_04c_posterior.py</code></p>
+
+    <h3>严格时序：h 不是被用两次，是「接力」</h3>
+    <p>你可能注意到：GRU 用 h，posterior 也用 h —— 是不是同一份记忆用了两次？<br>
+       <b>不是。</b>它们用的是<b>不同时刻的 h</b>：</p>
+    <table>
+      <tr><th>步骤</th><th>消费什么</th><th>产出什么</th></tr>
+      <tr><td>① GRU</td><td><b>h[t−1]</b>（<b>上一帧</b>的记忆）+ z[t−1] + 动作 + 本体</td><td><b>h[t]</b>（新记忆）</td></tr>
+      <tr><td>② posterior</td><td><b>h[t]</b>（<b>刚算出来的</b>）+ emb[t]</td><td>z[t]</td></tr>
+      <tr><td>③ 预测头</td><td>h[t] + z[t]</td><td><code>emb_pred</code> / 本体预测</td></tr>
+    </table>
+    <div class="key">是<b>接力</b>：GRU 先更新记忆，posterior 再消费这个<b>新</b>记忆 —— 消费的不是 GRU 输入的那份旧的。<br><br>
+      不过你的直觉有一半是对的：h[t] 产出后确实<b>同时被多个下游消费</b>
+      （prior_net、post_net、obs_pred、proprio_pred 四个）。<br>
+      这叫<b>扇出（fan-out）</b>——一次产出、多个消费者，不是"被用了两次"。</div>
+
+    <h3>时间对齐表：谁产出、谁消费、和谁配对</h3>
+    <table>
+      <tr><th>时刻</th><th>谁产出</th><th>谁消费</th><th>对齐关系</th></tr>
+      <tr><td><b>t−1</b></td><td>GRU 产出 <b>h[t−1]</b></td><td>—</td><td>—</td></tr>
+      <tr><td><b>t</b></td><td>GRU 消费 <code>h[t−1] + z[t−1]</code></td><td>→ 产出 <b>h[t]</b></td><td>h[t] 用的是<b>上一帧的 z</b></td></tr>
+      <tr><td><b>t</b></td><td>—</td><td>posterior 消费 <code>h[t] + emb[t]</code></td><td>这俩是<b>同一帧</b> ✓ → 产出 z[t]</td></tr>
+      <tr><td><b>t+1</b></td><td>GRU 消费 <code>h[t] + z[t]</code></td><td>→ 产出 h[t+1]</td><td>—</td></tr>
+    </table>
+    <div class="note"><b>一句话记住</b>：接力链是
+      <code>z[t−1] → GRU → h[t]</code>，然后 <code>h[t] + emb[t] → posterior → z[t]</code>。<br>
+      记忆总是比图像"慢半拍"产出、但和当前图像<b>同帧配对</b>——
+      这正是"用过去的经验理解现在看到的画面"。</div>
+  </section>
+
+  <!-- z 的去向 -->
+  <section>
+    <h2><span class="num" style="background:#e74c3c">z</span>z 出来之后去哪</h2>
+
+    <h3>一句话</h3>
+    <p>z（32 维）出来后<b>兵分三路</b>：一路往「未来」走，两路往「当前预测」走。</p>
+
+    <h3>先把维度账记全（接着上一节）</h3>
+    <table>
+      <tr><th>步骤</th><th>维度</th></tr>
+      <tr><td><code>cat(h, emb)</code></td><td>456</td></tr>
+      <tr><td>post_net 输出</td><td>64</td></tr>
+      <tr><td>拆开</td><td>mu 32 ＋ logvar 32</td></tr>
+      <tr><td>算出 std</td><td>32</td></tr>
+      <tr><td><b>采样得到 z</b></td><td><b>32</b></td></tr>
+    </table>
+
+    <h3>三条路</h3>
+    <table>
+      <tr><th>路</th><th>去哪</th><th>维度</th><th>结果</th></tr>
+      <tr><td><b>①</b></td><td>传给<b>下一帧</b>的 GRU（和动作、本体一起）</td><td>32+4+10 = 46</td><td>更新出下一帧的 h</td></tr>
+      <tr><td><b>②</b></td><td>和 h 拼起来进 <code>obs_pred</code></td><td>200+32 = 232 → 256</td><td>猜出 <code>emb_pred</code></td></tr>
+      <tr><td><b>③</b></td><td>和 h 拼起来进 <code>proprio_pred</code></td><td>232 → 10</td><td>猜出本体状态</td></tr>
+    </table>
+    <div id="zGo"></div>
+    <div class="cap">z 往右上走「未来」，往右走「当前预测」</div>
+
+    <h3>每条路的尽头都是一个 loss</h3>
+    <table>
+      <tr><th>猜出来的东西</th><th>和谁比</th><th>对应哪项 loss</th></tr>
+      <tr><td><code>emb_pred</code>（256）</td><td>真实的 <code>emb</code>（256）</td><td>emb 预测 loss</td></tr>
+      <tr><td><code>emb_pred</code> → Decoder → 图（3,64,64）</td><td>真实图像</td><td>重建 loss</td></tr>
+      <tr><td><code>proprio_pred</code>（10）</td><td>真实本体（10）</td><td>本体 loss</td></tr>
+      <tr><td>（posterior 与 prior 两个分布的差异）</td><td>—</td><td>KL loss</td></tr>
+    </table>
+    <div class="note">接下来把三条路<b>一条一条走一遍</b> —— 先走第①条（GRU）。</div>
+
+    <h3>从这里回头看整条链</h3>
+    <div class="key">
+      图像 → Encoder → <b>emb(256)</b> →（+h）posterior → <b>z(32)</b> →（+h）obs_pred → <b>emb_pred(256)</b>
+      → ① 和 emb 比 ② 进 Decoder 还原成图<br>
+      同时 z 传给下一帧 GRU → 继续循环
+    </div>
+  </section>
+
+  <!-- 路① -->
+  <section>
+    <h2><span class="num" style="background:#f39c12">路①</span>路①：z 往「未来」走 —— 交给 GRU</h2>
+    <p>三条路一条一条讲。先走第①条：<b>z[t] 传给下一帧，喂给下一帧的 GRU</b>，更新出下一帧的记忆 h。
+       这条路是"记忆"的生命线。</p>
+
+    <h3>下一帧的 GRU 吃什么</h3>
+    <table>
+      <tr><th>输入</th><th>维度</th><th>说明</th></tr>
+      <tr><td><code>z</code>（上一帧的判断）</td><td>32</td><td>上一帧留下的信息</td></tr>
+      <tr><td><code>actions[t]</code></td><td>4</td><td>这一帧做了什么动作</td></tr>
+      <tr><td><code>proprio[t]</code></td><td>10</td><td>机械臂自身状态（位置、速度…）</td></tr>
+      <tr><td><b>合计</b></td><td><b>46</b></td><td><b>没有图像</b></td></tr>
+    </table>
+    <div class="key"><b>这是整个设计里最重要的一个决定。</b><br>
+      如果 GRU 直接吃图像，那么一旦没有图像（做梦/想象时）它就跑不动了。<br>
+      现在它只吃「上一帧的判断 + 动作 + 本体」，所以<b>完全可以在没有图像的情况下一直往前推</b>。</div>
+
+    <h3>等一下：46 维和 200 维，怎么放在一起运算？</h3>
+    <p>你大概会卡在这里：输入 <code>x</code> 是 <b>46</b> 维，旧记忆 <code>h</code> 是 <b>200</b> 维，
+       维度都不一样，怎么相加？</p>
+    <div class="note"><b>答案是：各自乘一个矩阵，都投影成 200 维，然后相加。</b>
+       不是把两个向量直接拼一起，也不是直接加。</div>
+
+    <div id="gruMath"></div>
+    <div class="cap">x 经 (200×46) 矩阵、h 经 (200×200) 矩阵，都变成 200 维后才能相加</div>
+
+    <p>以「更新门 z」为例，公式就是：</p>
+    <table>
+      <tr><th>项</th><th>形状</th><th>作用</th></tr>
+      <tr><td><code>x</code>（输入）</td><td>46</td><td>z + 动作 + 本体</td></tr>
+      <tr><td><code>W_iz</code></td><td>200 × 46</td><td>把 46 维<b>投影</b>到 200 维</td></tr>
+      <tr><td><code>h</code>（旧记忆）</td><td>200</td><td>上一帧的记忆</td></tr>
+      <tr><td><code>W_hz</code></td><td>200 × 200</td><td>把 200 维再变换一次（提取该用的部分）</td></tr>
+      <tr><td>相加结果</td><td><b>200</b></td><td>维度一致 → 可以相加</td></tr>
+    </table>
+
+    <h3>这 6 个 W 都是什么？</h3>
+    <p>命名规则：下标<b>第一个字母</b>表示作用在谁身上，<b>第二个字母</b>表示属于哪个门。</p>
+    <table>
+      <tr><th>矩阵</th><th>形状</th><th>读作</th></tr>
+      <tr><td><code>W_ir</code></td><td>200 × 46</td><td><b>i</b>nput → <b>r</b>　输入 到 重置门</td></tr>
+      <tr><td><code>W_iz</code></td><td>200 × 46</td><td><b>i</b>nput → <b>z</b>　输入 到 更新门</td></tr>
+      <tr><td><code>W_in</code></td><td>200 × 46</td><td><b>i</b>nput → <b>n</b>　输入 到 候选</td></tr>
+      <tr><td><code>W_hr</code></td><td>200 × 200</td><td><b>h</b>idden → <b>r</b>　记忆 到 重置门</td></tr>
+      <tr><td><code>W_hz</code></td><td>200 × 200</td><td><b>h</b>idden → <b>z</b>　记忆 到 更新门</td></tr>
+      <tr><td><code>W_hn</code></td><td>200 × 200</td><td><b>h</b>idden → <b>n</b>　记忆 到 候选</td></tr>
+    </table>
+    <p>规律：<code>W_i?</code> 都吃输入 x（列数 <b>46</b>）；<code>W_h?</code> 都吃记忆 h（列数 <b>200</b>）。</p>
+
+    <h3>它们在代码里怎么存</h3>
+    <p>PyTorch 不存 6 个矩阵，而是三个一组<b>竖着堆起来</b>：</p>
+    <table>
+      <tr><th>参数</th><th>形状</th><th>切片</th><th>对应</th></tr>
+      <tr><td rowspan="3"><code>weight_ih</code></td><td rowspan="3">(600, 46)</td><td><code>[0:200]</code></td><td><code>W_ir</code></td></tr>
+      <tr><td><code>[200:400]</code></td><td><code>W_iz</code></td></tr>
+      <tr><td><code>[400:600]</code></td><td><code>W_in</code></td></tr>
+      <tr><td rowspan="3"><code>weight_hh</code></td><td rowspan="3">(600, 200)</td><td><code>[0:200]</code></td><td><code>W_hr</code></td></tr>
+      <tr><td><code>[200:400]</code></td><td><code>W_hz</code></td></tr>
+      <tr><td><code>[400:600]</code></td><td><code>W_hn</code></td></tr>
+    </table>
+    <p>上面那个手算小例子就是按这个切片取权重算的，结果与程序输出一致 —— 规则已被验证。</p>
+
+    <h3>顺带纠正一个说法：是「两个门 + 一个候选」</h3>
+    <table>
+      <tr><th></th><th>输出范围</th><th>本质</th><th>UE 类比</th></tr>
+      <tr><td><b>r</b> 重置门</td><td>0 ~ 1</td><td>阀门：算新候选时，旧记忆参与多少</td><td>音量旋钮</td></tr>
+      <tr><td><b>z</b> 更新门</td><td>0 ~ 1</td><td>阀门：最终混合时，旧记忆保留多少</td><td>音量旋钮</td></tr>
+      <tr><td><b>n</b> 候选</td><td>−1 ~ 1</td><td><b>不是门</b>，是要写入的新内容</td><td>要写进黑板的内容</td></tr>
+    </table>
+    <p>判断标准：<b>过 sigmoid、输出 0~1 的才是「门」</b>（像阀门控制流量）；
+       <code>n</code> 过 tanh、输出 −1~1，是<b>内容</b>本身。<br>
+       所以准确说法是：GRU 有 <b>2 个门</b>，加上 1 个候选记忆 —— 一共 3 组权重。</p>
+
+    <h3>三个量都是这么算出来的</h3>
+    <table>
+      <tr><th>量</th><th>公式</th><th>激活</th></tr>
+      <tr><td><code>r</code></td><td><code>W_ir·x + W_hr·h</code></td><td>sigmoid</td></tr>
+      <tr><td><code>z</code></td><td><code>W_iz·x + W_hz·h</code></td><td>sigmoid</td></tr>
+      <tr><td><code>n</code></td><td><code>W_in·x + r⊙(W_hn·h)</code></td><td>tanh</td></tr>
+      <tr><td><b>h'</b></td><td><code>(1−z)⊙n + z⊙h</code></td><td>—</td></tr>
+    </table>
+    <div class="note">注意 <code>n</code> 的公式里有个 <code>r⊙(...)</code>：
+       <b>重置门 r 控制旧记忆对"新候选"的贡献</b> ——
+       r≈0 表示"算新东西时别管旧记忆"，r≈1 表示"把旧记忆全用上"。</div>
+
+    <h3>三个分支的关系：可以理解成 3 个独立的线性层</h3>
+    <p><span style="background:#fff8e6;color:#b7791f;padding:2px 8px;border-radius:4px;font-size:13px;font-weight:bold">易错点</span>
+       <code>h' = (1−z)⊙n + z⊙h</code> 里只有 z 和 n，<b>看不到 r</b> —— r 去哪了？</p>
+    <p>你的直觉完全正确：<b>3 个独立的小分支，对同一份 x 和 h 各算各的</b>。</p>
+    <table>
+      <tr><th>分支</th><th>吃什么</th><th>输出</th><th>结果拿去干嘛</th></tr>
+      <tr><td><b>r</b> 分支</td><td>x, h</td><td>r (200, 0~1)</td><td>去<b>参与 n 的计算</b></td></tr>
+      <tr><td><b>n</b> 分支</td><td>x, h，<b>还有 r</b></td><td>n (200, −1~1)</td><td>新内容的候选值</td></tr>
+      <tr><td><b>z</b> 分支</td><td>x, h</td><td>z (200, 0~1)</td><td>去<b>参与 h' 的混合</b></td></tr>
+    </table>
+    <div class="key"><b>为什么 h' 的公式里看不到 r？</b><br>
+      因为 r 在<b>上游已经用掉了</b> —— 它参与了 n 的计算，r 的影响已经"烧进" n 里。<br>
+      数据流：<code>x, h → r → n → h' ← z</code><br>
+      <b>r 是内层门</b>（管新内容怎么算），<b>z 是外层门</b>（管新旧怎么混）。
+      唯一的交叉点就是：n 的计算要用到 r，其余各分支互不相干。</div>
+
+    <div class="note"><b>这些 W 就是普通的线性层（Linear，y = W·x + b）</b>：
+       148,800 个参数全部可学习，跟着 loss 被梯度下降更新。</div>
+
+    <div class="warn"><b>一个符号约定要记清</b>：PyTorch 写的是
+       <code>h' = (1−z)⊙n + z⊙h</code>，也就是
+       <b>z 越大 = 越保留旧记忆</b>。<br>
+       这和前面 Lerp 图里的 alpha <b>正好相反</b>：alpha = 1 − z。
+       （alpha=0 = 完全不更新 = z=1）</div>
+
+    <h3>现在从 46 维开始，完整走一遍</h3>
+    <p>前面讲完了矩阵投影。现在按顺序把整个计算列出来，
+       <b>每一步的形状和真实数字都给你看</b>（脚本 <code>demo_04e_gru_full.py</code>）。</p>
+
+    <h3>先补两个工具函数（不然下面会看不懂）</h3>
+    <p>后面会反复用到两个"压缩函数"，先认识它们。</p>
+
+    <p><b>① sigmoid</b>：　<code>σ(x) = 1 / (1 + e^(−x))</code></p>
+    <p>作用：把<b>任意实数</b>压到 <b>0 ~ 1</b> 之间。</p>
+    <table>
+      <tr><th>输入</th><th>0</th><th>1</th><th>−1</th><th>2</th><th>−2</th><th>10</th><th>−10</th></tr>
+      <tr><td><b>输出</b></td><td><b>0.5000</b></td><td>0.7311</td><td>0.2689</td><td>0.8808</td><td>0.1192</td><td>1.0000</td><td>0.0000</td></tr>
+    </table>
+    <div class="key"><b>为什么需要它</b>：因为"门"要输出的是<b>比例</b>，比例必须在 0~1 之间。<br>
+      sigmoid 就是干这个的 —— 不管输入是 −100 还是 +100，输出一定落在 0~1，
+      输入 0 时正好是 0.5（一半一半）。</div>
+
+    <p><b>② tanh</b>：把任意实数压到 <b>−1 ~ 1</b> 之间。</p>
+    <table>
+      <tr><th>输入</th><th>0</th><th>1</th><th>−1</th><th>2</th><th>−2</th></tr>
+      <tr><td><b>输出</b></td><td><b>0.0000</b></td><td>0.7616</td><td>−0.7616</td><td>0.9640</td><td>−0.9640</td></tr>
+    </table>
+    <div class="note"><b>分工</b>：sigmoid 用于<b>比例 / 门</b>（必须 0~1）；
+      tanh 用于<b>内容</b>（可正可负）。</div>
+
+    <h3>步骤 1：投影（46 → 200，200 → 200）</h3>
+    <table>
+      <tr><th>操作</th><th>形状</th><th>真实数字（前 5 个）</th><th>整段范围</th></tr>
+      <tr><td><code>x(46) × W_iz</code></td><td>→ (200)</td><td><code>[0.253, 0.201, −0.05, −0.464, −0.269]</code></td><td>−0.838 ~ 0.900</td></tr>
+      <tr><td><code>h(200) × W_hz</code></td><td>→ (200)</td><td><code>[−0.063, 0.039, 0.022, 0.04, 0.003]</code></td><td>−0.070 ~ 0.071</td></tr>
+    </table>
+    <p>（这帧的 x 前 5 个是 <code>[−0.747, 0.71, 1.213, 0.551, −2.027]</code>，h 全 0 因为是第一帧）</p>
+
+    <h3>步骤 2：相加</h3>
+    <table>
+      <tr><th>结果</th><th>形状</th><th>前 5 个</th><th>整段范围</th></tr>
+      <tr><td><code>raw_z</code></td><td>(200)</td><td><code>[0.19, 0.24, −0.029, −0.424, −0.266]</code></td><td>−0.802 ~ 0.899</td></tr>
+    </table>
+    <div class="warn"><span style="background:#fdecea;color:#c0392b;padding:2px 8px;border-radius:4px;font-size:13px;font-weight:bold">易错点</span>
+       这一帧<b>恰好</b>落在 −0.80 ~ 0.90，但纯属巧合：
+       没有任何机制限制 raw_z 的取值 —— 换一帧输入，它完全可能是 −3 或 +7。
+       而插值系数必须稳定落在 0~1，所以<b>不能直接用</b>，要先过 sigmoid。</div>
+
+    <h3>步骤 3：sigmoid 压到 0~1</h3>
+    <table>
+      <tr><th>结果</th><th>形状</th><th>前 5 个</th><th>整段范围</th></tr>
+      <tr><td><code>z</code></td><td>(200)</td><td><code>[0.5475, 0.5597, 0.4928, 0.3955, 0.434]</code></td><td><b>0.3095 ~ 0.7107</b></td></tr>
+    </table>
+    <div class="ok">现在全部落在 0~1，<b>可以直接当插值系数了</b>。</div>
+
+    <h3>同一个套路，再算 r 和 n</h3>
+    <table>
+      <tr><th>量</th><th>公式</th><th>范围</th><th>前 5 个</th></tr>
+      <tr><td><code>r</code></td><td><code>sigmoid(W_ir·x + W_hr·h)</code></td><td>0.2995 ~ 0.7089</td><td><code>[0.4469, 0.459, 0.3647, 0.5721, 0.4491]</code></td></tr>
+      <tr><td><code>n</code></td><td><code>tanh(W_in·x + r⊙(W_hn·h))</code></td><td>−0.6581 ~ 0.7180</td><td><code>[−0.3311, 0.0897, −0.4161, −0.0203, −0.0292]</code></td></tr>
+    </table>
+
+    <h3>步骤 4：混合，得出新记忆</h3>
+    <table>
+      <tr><th>结果</th><th>形状</th><th>前 5 个</th></tr>
+      <tr><td><b><code>h' = (1−z)⊙n + z⊙h</code></b></td><td>(200)</td><td><code>[−0.1498, 0.0395, −0.211, −0.0123, −0.0165]</code></td></tr>
+      <tr><td>程序 <code>gru(x, h)</code> 输出</td><td>(200)</td><td><code>[−0.1498, 0.0395, −0.211, −0.0123, −0.0165]</code>　✓ 完全一致</td></tr>
+    </table>
+
+    <h3>为什么需要两个门？一个不行吗</h3>
+    <p>一个门也能跑（最朴素的 RNN 连门都没有）。GRU 用两个是<b>分工</b>：</p>
+    <table>
+      <tr><th>门</th><th>管什么</th></tr>
+      <tr><td><code>r</code> 重置门</td><td>算「新候选 n」时，旧记忆掺进去多少</td></tr>
+      <tr><td><code>z</code> 更新门</td><td>最终混合时，旧记忆保留多少</td></tr>
+    </table>
+    <div class="note">分开的意义：模型能做到「<b>用旧记忆算出新内容（r 大），但最后决定不采纳（z 小）</b>」。
+      一个门做不出这种组合 —— 这就是 GRU 比朴素 RNN 强的地方。</div>
+
+    <h3>最后得出什么</h3>
+    <div class="key">一个 <b>200 维的新向量 h'</b> —— 这一帧的新记忆。<br>
+      它接下来做两件事：<br>
+      ① 传给<b>下一帧</b>的 GRU，继续算（回到步骤 1）<br>
+      ② 和 z 拼成 232 维，去喂 <code>obs_pred</code> / <code>proprio_pred</code></div>
+
+    <h3>门：alpha 是网络算出来的</h3>
+    <p>前面公式里的 <code>z</code> 和 <code>r</code> 就是控制更新幅度的<b>门</b>：
+       每一维各自一个 0~1 的数（sigmoid 保证的），<b>由网络根据当前输入算出来</b>，不是常量。<br>
+       200 维里每维一个独立的门 —— 所以它能同时做到"记住方块位置"和"忘掉桌面纹理"。</p>
+
+    <h3>为什么需要门？不能直接累加吗</h3>
+    <p>朴素写法 <code>h = h + x</code> 累加 6 步后（脚本实测）：<code>[3.0, 3.0, 3.0, 3.0]</code></p>
+    <p>只会越滚越大 —— 该忘的忘不掉，数值还会爆炸。
+       门的作用就是让模型<b>学会什么时候该忘、什么时候该记</b>。</p>
+
+    <h3>我们这个 GRU 的实测</h3>
+    <p>代码里是 <code>nn.GRUCell(46, 200)</code>：输入 46 维，记忆 200 维。
+       用真实序列跑 32 帧：</p>
+    <table>
+      <tr><th>帧</th><th>记忆 h 的模长</th><th>与上一帧的余弦相似度</th></tr>
+      <tr><td>0</td><td>0.6497</td><td>0.0000（从零开始）</td></tr>
+      <tr><td>1</td><td>0.9512</td><td>0.9940</td></tr>
+      <tr><td>5</td><td>1.2261</td><td>0.9986</td></tr>
+      <tr><td>31</td><td>1.3040</td><td>0.9991</td></tr>
+    </table>
+    <p>相似度始终接近 <b>1</b>，说明记忆在<b>缓慢演化</b>，而不是每帧推翻重来 —— 这正是我们要的。</p>
+    <p style="font-size:13px;color:#6b7c8d">（当前是未训练的随机 GRU，这组数字只说明结构行为，不代表训练后的效果）</p>
+    <p>自己跑：<code>python prism/docs/demo_04b_gru.py</code></p>
+
+  </section>
+
+  <!-- 路②③ -->
+  <section>
+    <h2><span class="num" style="background:#e74c3c">路②③</span>路②③：z 往「当前预测」走</h2>
+    <p>先重新把总览图摆出来 —— ①已经在上一节走完，现在走②③：</p>
+    <div id="zGo2"></div>
+    <div class="cap">①（左上）上一节讲完了；②③走的是中间这条「cat(h,z) → 232」的路</div>
+
+    <h3>路②和路③是同一类操作</h3>
+    <p>两条路的<b>输入完全相同</b>：把 h（200）和 z（32）拼成 <b>232</b> 维，各自过一个线性层。</p>
+    <table>
+      <tr><th>路</th><th>线性层</th><th>输出</th><th>含义</th></tr>
+      <tr><td><b>②</b></td><td><code>obs_pred</code>（232 → 256）</td><td><code>emb_pred</code></td><td>模型<b>猜</b>的当前帧画面摘要</td></tr>
+      <tr><td><b>③</b></td><td><code>proprio_pred</code>（232 → 10）</td><td>本体预测</td><td>模型<b>猜</b>的机械臂自身状态</td></tr>
+    </table>
+
+    <h3>路②的产物有两条出路</h3>
+    <table>
+      <tr><th>出路</th><th>和谁比</th><th>对应 loss</th></tr>
+      <tr><td>直接和真实的 <code>emb[t]</code>（256）比</td><td>Encoder 算出的真实摘要</td><td><b>emb loss</b></td></tr>
+      <tr><td>送进 <code>Decoder</code> 还原成图（3,64,64）</td><td>真实的输入图像</td><td><b>重建 loss</b></td></tr>
+    </table>
+
+    <h3>路③的产物只有一条出路</h3>
+    <table>
+      <tr><th>出路</th><th>和谁比</th><th>对应 loss</th></tr>
+      <tr><td>和真实的 <code>proprio[t]</code>（10）比</td><td>数据里记录的本体状态</td><td><b>本体 loss</b></td></tr>
+    </table>
+
+    <div class="key"><b>三条路到此全部走完</b>：①喂给下一帧 GRU（时间上延续），
+      ②③猜当前帧的摘要和本体（每一帧的预测），
+      每条路的尽头都是一个 loss —— 四项加起来就是<b>下一小点</b>的内容。</div>
+
+    <div class="note"><b>一个容易疑惑的点</b>：为什么 <code>obs_pred</code> 猜的是「当前帧」而不是「下一帧」？<br>
+      因为训练时 z 来自 posterior（看过当前帧图像），所以它是在做「重建练习」——目的是练出好的 h 和 Decoder。<br>
+      真正的「预测未来」发生在<b>想象模式</b>：z 改从 prior 来（不看图），同样的网络就能一步步往前推 ——
+      就是「两种运行模式」那节讲的内容。</div>
+
+    <h3>同一个模块，两种用法</h3>
+    <table>
+      <tr><th>模式</th><th>z 来源</th><th>obs_pred 在做什么</th><th>准确叫法</th></tr>
+      <tr><td>训练（有图）</td><td>posterior</td><td>看着画面 → 压成摘要 → 再还原回来</td><td><b>重建</b>（练表征）</td></tr>
+      <tr><td>想象（无图）</td><td>prior</td><td>凭记忆猜这一帧长什么样</td><td><b>想象 / 预测</b></td></tr>
+    </table>
+    <div class="key">所以「学会想象」这件事：<b>模块是同一个（obs_pred），但要配合 prior 才是想象</b>。<br>
+      训练阶段它练的是「理解当前画面」，练出来的 h 和 Decoder，才是想象时能拿来用的东西。</div>
+
+    <h3>为什么还要单独有个「路③」</h3>
+    <p>本体状态（10 维）是<b>低维、精确、和动作强相关</b>的信号。单独给它一个监督，有两个作用：</p>
+    <ul>
+      <li>给训练一个<b>稳定的辅助信号</b>——像素重建噪声大，本体预测收敛快，能带着 h 先学好</li>
+      <li>MPC 做决策时需要知道「机械臂自己会到哪」，这个预测直接可用</li>
+    </ul>
+  </section>
+
+  <!-- 3 -->
+  <section>
+    <h2><span class="num" style="background:#8e44ad">源</span>z 的两个来源：prior 与 posterior</h2>
+    <p>z 有两个来源，这是 RSSM 的精髓：</p>
+    <table>
+      <tr><th>路径</th><th>输入</th><th>含义</th><th>什么时候用</th></tr>
+      <tr><td><b>prior</b> <code>p(z_t | h_t)</code></td><td>只有 h<sub>t</sub></td><td><b>凭记忆猜</b>：不看当前画面，只靠记忆推断世界现在什么样</td><td>想象 / 做梦时（没有图像）</td></tr>
+      <tr><td><b>posterior</b> <code>q(z_t | h_t, emb_t)</code></td><td>h<sub>t</sub> + 当前图像</td><td><b>看到真相后修正</b>：记忆的猜测 + 当前这一帧的真实信息</td><td>训练时（有图像）</td></tr>
+    </table>
+    <div class="note"><b>UE / 工程类比：这就是卡尔曼滤波</b>
+      <ul>
+        <li><b>prior</b> = predict 步：根据上一状态预测现在</li>
+        <li><b>posterior</b> = update 步：拿到观测后修正预测</li>
+      </ul>
+      RSSM 就是把卡尔曼滤波的两步用神经网络实现，并让它<b>自己学</b>该记什么、该信观测多少。</div>
+    <div class="note"><b>KL 项</b>的完整解释（公式 + 为什么它决定"想象力"）已移到
+       <b>笔记 05 · loss 四项</b>。这里只记一句：<br>
+       <code>KL(q ‖ p)</code> = 逼 prior（凭记忆猜）去模仿 posterior（看过图后的判断）。</div>
+
+    <h3>结构上唯一的差别：谁看了图像</h3>
+    <table>
+      <tr><th></th><th>输入</th><th>维度</th><th>网络</th></tr>
+      <tr><td><b>prior</b></td><td>只有 <code>h</code></td><td>200</td><td><code>Linear(200→200) → ELU → Linear(200→64)</code></td></tr>
+      <tr><td><b>posterior</b></td><td><code>cat(h, emb)</code></td><td><b>456</b></td><td><code>Linear(456→200) → ELU → Linear(200→64)</code></td></tr>
+    </table>
+    <p>就差一个 <code>emb</code>（当前帧图像）。其余结构一模一样，输出也都是 mu(32) + logvar(32)。</p>
+
+    <h3>训练时：两条都算，但只用 posterior 采样</h3>
+    <p>这是最容易搞错的地方。看代码：</p>
+    <table>
+      <tr><th>步骤</th><th>代码</th><th>说明</th></tr>
+      <tr><td>①</td><td><code>prior = self.prior_net(h)</code></td><td>先算出 prior（凭记忆）</td></tr>
+      <tr><td>②</td><td><code>post = self.post_net(cat([h, emb[t]]))</code></td><td>再算出 posterior（看了图）</td></tr>
+      <tr><td>③</td><td><code>z = self._rsample(mu_q, lv_q)</code></td><td><b>只用 posterior 采样</b> —— 拿去预测、重建</td></tr>
+      <tr><td>④</td><td><code>kl = 0.5*(lv_p - lv_q + ...)</code></td><td>prior 不参与预测，<b>只用来算 KL</b></td></tr>
+    </table>
+    <div class="warn">所以训练时 prior 是<b>陪练</b>：它自己不产出 z，
+       唯一的作用是提供 KL 这一项损失，让"凭记忆猜"的能力被练出来。</div>
+
+    <h3>为什么要分开：开卷考试 vs 闭卷考试</h3>
+    <div id="priorPost"></div>
+    <div class="cap">训练时两条路都跑；想象时只剩 prior 这条路</div>
+    <div class="key"><b>posterior = 开卷考试</b>（能看当前画面）→ 答案准<br>
+      <b>prior = 闭卷考试</b>（只凭记忆）→ 一开始答得很差<br>
+      <b>KL = 逼闭卷成绩去追开卷成绩</b><br><br>
+      结果：模型被迫把画面里的关键信息<b>写进记忆 h</b>——
+      因为只有记住了，闭卷才答得出来。这就是"想象力"的来源。</div>
+
+    <h3>它们怎么协作：一个完整时间线</h3>
+    <table>
+      <tr><th>阶段</th><th>prior 在干嘛</th><th>posterior 在干嘛</th></tr>
+      <tr><td><b>训练</b>（有图）</td><td>算出来，但只贡献 KL</td><td>产出 z，用于预测和重建</td></tr>
+      <tr><td><b>想象</b>（无图）</td><td><b>产出 z</b>，一路往前推</td><td>用不了（没有 emb）</td></tr>
+      <tr><td><b>遮挡</b>（图不可靠）</td><td>仍然可靠（不看图）</td><td>被污染（看图但图是坏的）</td></tr>
+    </table>
+
+    <h3>实测：遮住画面后，谁靠不住了</h3>
+    <p>把当前帧换成全黑，对比两者的输出变化：</p>
+    <table>
+      <tr><th></th><th>输出变化</th><th>结论</th></tr>
+      <tr><td><b>posterior</b></td><td><b>0.0012</b></td><td>被污染了（它依赖图像）</td></tr>
+      <tr><td><b>prior</b></td><td><b>0.0000</b></td><td>纹丝不动（结构决定它不看图）</td></tr>
+    </table>
+    <div class="key">这解释了整个设计的动机：<b>没有图像时，prior 是唯一能用的那条路</b>。
+       如果只训 posterior，模型一遇到遮挡就废了。</div>
+
+    <p style="margin-top:14px">自己跑：<code>python prism/docs/demo_04f_prior_posterior.py</code></p>
+  </section>
+
+  <!-- 7 -->
+  <section>
+    <h2><span class="num" style="background:#2d7ff9">结</span>三个记忆点</h2>
+    <ul>
+      <li>一帧 → Encoder → <b>emb(256)</b> →（+h）posterior → <b>z(32)</b> → 三条路</li>
+      <li><b>GRU 不吃图像</b>（输入 = z + 动作 + 本体 = 46 维）——这是"能做梦"的结构原因</li>
+      <li><b>prior = 凭记忆猜，posterior = 看了图修正</b>；两者靠 KL 协作（公式见笔记 05）</li>
+      <li>三条路的尽头都是 loss —— <b>四项 loss 见笔记 05</b></li>
+    </ul>
+    <p style="margin-top:14px">下一页：<b>笔记 05 · loss 四项</b>（训练时到底在优化什么）</p>
+    <p style="margin-top:16px">自己跑一遍：<code>python prism/docs/demo_04_rssm.py</code></p>
+    <div class="note"><b>下一小点</b>：训练时到底在优化什么？
+      讲 <b>loss 的四项</b>（重建 / emb 预测 / 本体预测 / KL），以及"预测未来"是怎么被监督的。</div>
+  </section>
+
+</div>
+
+<script>
+/* ============ 时间展开图（衔接用） ============ */
+(function(){
+  const W = 960, H = 330;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:960px">`;
+  s += `<defs>
+    <marker id="a2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker>
+    <marker id="ag2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#27ae60"/></marker>
+    <marker id="ar2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#e74c3c"/></marker>
+  </defs>`;
+
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||12}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+14}" text-anchor="middle" font-size="10" fill="#6b7c8d">${t2}</text>`;
+  }
+  function line(x1,y1,x2,y2,mk,color,dash){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color||'#7f8c8d'}" stroke-width="2"
+           marker-end="url(#${mk||'a2'})"${dash?' stroke-dasharray="6,4"':''}/>`;
+  }
+  function poly(pts,mk,color,dash){
+    s += `<polyline points="${pts}" fill="none" stroke="${color||'#7f8c8d'}" stroke-width="2"
+           marker-end="url(#${mk||'a2'})"${dash?' stroke-dasharray="6,4"':''}/>`;
+  }
+
+  const BX = [15, 330, 645], BY = 30;
+  BX.forEach((bx, i) => {
+    s += `<text x="${bx+140}" y="20" text-anchor="middle" font-size="13" font-weight="bold" fill="#2d7ff9">t = ${i}</text>`;
+    box(bx+100, 35,  70, 40, '#eef2f6', '#95a5a6', 'img',   null, 12);
+    box(bx+85,  87, 110, 30, '#f4f6f8', '#95a5a6', 'Encoder', null, 11);
+    box(bx+85, 127, 110, 34, '#eafaf1', '#27ae60', 'emb(256)', null, 12);
+    box(bx+15, 180, 130, 44, '#fff3e0', '#f39c12', 'GRU → h',
+        i === 0 ? '初始 h=0, z=0' : 'z(t-1)+a+本体', 11);
+    box(bx+160, 180, 110, 44, '#eafaf1', '#27ae60', 'posterior', 'h + emb', 11);
+    box(bx+95, 245,  90, 40, '#fdecea', '#e74c3c', 'z(t)', '32', 12);
+
+    line(bx+135, 75,  bx+135, 85);
+    line(bx+140, 117, bx+140, 125);
+    poly(`${bx+140},161 ${bx+140},170 ${bx+215},170 ${bx+215},177`, 'ag2', '#27ae60');
+    line(bx+145, 202, bx+157, 202, 'ag2', '#27ae60');
+    poly(`${bx+215},224 ${bx+215},235 ${bx+140},235 ${bx+140},243`, 'a2', '#7f8c8d');
+  });
+
+  for(let i=0;i<2;i++){
+    const bx = BX[i], bx2 = BX[i+1];
+    poly(`${bx+140},285 ${bx+140},303 ${bx2+4},303 ${bx2+4},202 ${bx2+13},202`, 'ar2', '#e74c3c', true);
+  }
+  s += `<text x="480" y="322" text-anchor="middle" font-size="12" fill="#e74c3c">红色虚线：z(t) 传给下一帧，成为下一帧 GRU 的输入</text>`;
+  s += `</svg>`;
+  document.getElementById('unroll').innerHTML = s;
+})();
+
+/* ============ emb 的两个去处 ============ */
+(function(){
+  const W = 960, H = 330;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:960px">`;
+  s += `<defs>
+    <marker id="a4" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker>
+    <marker id="ar4" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#e74c3c"/></marker>
+  </defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||13}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  function line(x1,y1,x2,y2,mk,color){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color||'#7f8c8d'}" stroke-width="2"
+           marker-end="url(#${mk||'a4'})"/>`;
+  }
+  function poly(pts,mk,color){
+    s += `<polyline points="${pts}" fill="none" stroke="${color||'#7f8c8d'}" stroke-width="2"
+           marker-end="url(#${mk||'a4'})"/>`;
+  }
+
+  s += `<text x="20" y="18" font-size="13" font-weight="bold" fill="#e74c3c">✗ emb 不进 GRU（GRU 只吃 z(t-1) + 动作 + 本体）</text>`;
+
+  box(30,  50, 120, 60, '#e8f2ff', '#2d7ff9', 'h[t]',   '200 · 记忆');
+  box(30, 150, 120, 60, '#eafaf1', '#27ae60', 'emb[t]', '256 · 当前图像');
+  s += `<text x="90" y="232" text-anchor="middle" font-size="11" fill="#6b7c8d">↑ 来自 Encoder</text>`;
+
+  box(220, 85, 160, 65, '#f5eef8', '#8e44ad', 'posterior', '456 → 64', 13);
+  box(430, 85,  90, 65, '#fdecea', '#e74c3c', 'z[t]', '32', 13);
+
+  box(560, 150, 150, 60, '#f4f6f8', '#95a5a6', 'obs_pred', '232 → 256', 13);
+  box(750, 150, 120, 60, '#f5eef8', '#8e44ad', 'emb_pred[t]', '256 · 猜的', 12);
+  box(600, 250, 150, 55, '#fff8e6', '#f5b041', 'loss：比一比', 'emb_pred vs emb', 12);
+  box(750,  40, 120, 55, '#f4f6f8', '#95a5a6', 'Decoder', '→ 图 (3,64,64)', 12);
+
+  line(150, 80,  218, 105);
+  line(150, 180, 218, 130);
+  line(380, 117, 428, 117);
+  poly('475,150 475,180 558,180');
+  line(710, 180, 748, 180);
+  poly('810,148 810,97', 'a4');
+  poly('810,210 810,235 675,235 675,247');
+  poly('90,210 90,275 598,275');
+
+  s += `</svg>`;
+  document.getElementById('embGo').innerHTML = s;
+})();
+
+/* ============ 高斯分布：std 小 vs std 大 ============ */
+(function(){
+  const W = 960, H = 290, BASE = 240, PEAK = 165;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:960px">`;
+
+  function yAt(cx, sigma, x){ return BASE - PEAK * Math.exp(-0.5 * Math.pow((x - cx) / sigma, 2)); }
+  function curve(cx, sigma, x0, x1){
+    const pts = [];
+    for(let i = 0; i <= 90; i++){
+      const x = x0 + (x1 - x0) * i / 90;
+      pts.push(`${x.toFixed(1)},${yAt(cx, sigma, x).toFixed(1)}`);
+    }
+    return pts.join(' ');
+  }
+  function draw(cx, sigma, x0, x1, color, title, spread){
+    // 基线
+    s += `<line x1="${x0}" y1="${BASE}" x2="${x1}" y2="${BASE}" stroke="#cfd8e3" stroke-width="2"/>`;
+    // mu 竖虚线
+    s += `<line x1="${cx}" y1="${BASE}" x2="${cx}" y2="${BASE - PEAK - 12}" stroke="${color}"
+           stroke-width="1.5" stroke-dasharray="4,4"/>`;
+    s += `<text x="${cx}" y="${BASE + 18}" text-anchor="middle" font-size="12" fill="${color}">mu</text>`;
+    // 曲线
+    s += `<polyline points="${curve(cx, sigma, x0, x1)}" fill="none" stroke="${color}" stroke-width="3"/>`;
+    // 采样点
+    spread.forEach(d => {
+      const x = cx + d, y = yAt(cx, sigma, x);
+      s += `<line x1="${x}" y1="${BASE}" x2="${x}" y2="${y}" stroke="${color}" stroke-width="1" opacity=".45"/>`;
+      s += `<circle cx="${x}" cy="${y}" r="4.5" fill="#fff" stroke="${color}" stroke-width="2.5"/>`;
+    });
+    s += `<text x="${(x0 + x1) / 2}" y="24" text-anchor="middle" font-size="14" font-weight="bold" fill="${color}">${title}</text>`;
+  }
+
+  draw(255, 45, 70, 440, '#8e44ad', 'std 小 = 很确定', [-50, -25, 10, 30, 55]);
+  draw(705, 130, 520, 890, '#e74c3c', 'std 大 = 不确定', [-170, -80, 20, 110, 185]);
+
+  s += `<text x="255" y="${BASE + 40}" text-anchor="middle" font-size="12" fill="#6b7c8d">采样点都挤在 mu 附近</text>`;
+  s += `<text x="705" y="${BASE + 40}" text-anchor="middle" font-size="12" fill="#6b7c8d">采样点散得很开</text>`;
+  s += `</svg>`;
+  document.getElementById('gauss').innerHTML = s;
+})();
+
+/* ============ GRU 矩阵运算：46 与 200 怎么相加 ============ */
+(function(){
+  const W = 960, H = 220;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:960px">`;
+  s += `<defs><marker id="a6" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||13}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  function line(x1,y1,x2,y2){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#7f8c8d" stroke-width="2" marker-end="url(#a6)"/>`;
+  }
+
+  box(30,  45, 105, 48, '#e8f2ff', '#3498db', 'x 输入', '(46)', 13);
+  box(165, 45, 165, 48, '#f4f6f8', '#95a5a6', 'W_iz 矩阵', '(200 × 46)', 12);
+  box(30, 125, 105, 48, '#e8f2ff', '#2d7ff9', 'h 旧记忆', '(200)', 13);
+  box(165, 125, 165, 48, '#f4f6f8', '#95a5a6', 'W_hz 矩阵', '(200 × 200)', 12);
+
+  s += `<circle cx="392" cy="94" r="23" fill="#fff8e6" stroke="#f5b041" stroke-width="2"/>`;
+  s += `<text x="392" y="101" text-anchor="middle" font-size="20" fill="#f5b041" font-weight="bold">+</text>`;
+
+  box(450, 70, 110, 48, '#fff3e0', '#f39c12', 'sigmoid', null, 13);
+  box(600, 70, 95, 48, '#fdecea', '#e74c3c', 'z', '(200)', 14);
+
+  line(135, 69, 163, 69);
+  line(330, 69, 369, 88);
+  line(135, 149, 163, 149);
+  line(330, 149, 369, 100);
+  line(415, 94, 448, 94);
+  line(560, 94, 598, 94);
+
+  s += `<text x="392" y="150" text-anchor="middle" font-size="12" fill="#6b7c8d">都变成 200 维，可以相加了</text>`;
+  s += `<text x="720" y="80" font-size="13" fill="#22303f">同样方式还算出</text>`;
+  s += `<text x="720" y="100" font-size="13" fill="#22303f">r（sigmoid）和 n（tanh）</text>`;
+  s += `<text x="720" y="128" font-size="13" font-weight="bold" fill="#2d7ff9">h' = (1−z)⊙n + z⊙h</text>`;
+
+  s += `</svg>`;
+  document.getElementById('gruMath').innerHTML = s;
+})();
+
+/* ============ z 的三条路（含来源） ============ */
+(function(){
+  const W = 1120, H = 360;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:1120px">`;
+  s += `<defs>
+    <marker id="a5" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker>
+    <marker id="ap5" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8e44ad"/></marker>
+    <marker id="ag5" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#27ae60"/></marker>
+  </defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||13}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  function line(x1,y1,x2,y2,mk,color){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color||'#7f8c8d'}" stroke-width="2" marker-end="url(#${mk||'a5'})"/>`;
+  }
+  function poly(pts,mk,color){
+    s += `<polyline points="${pts}" fill="none" stroke="${color||'#7f8c8d'}" stroke-width="2" marker-end="url(#${mk||'a5'})"/>`;
+  }
+
+  s += `<text x="15" y="28" font-size="12" fill="#6b7c8d">z 从哪来（第 t 帧，两种模式二选一）：</text>`;
+  box(15,  50, 150, 55, '#f5eef8', '#8e44ad', 'prior', 'h[t] 只凭记忆', 13);
+  box(15, 165, 150, 55, '#eafaf1', '#27ae60', 'posterior', 'h[t] + emb[t]', 13);
+
+  box(230, 140, 100, 60, '#fdecea', '#e74c3c', 'z[t]', '32', 14);
+
+  box(450,  40, 175, 55, '#fff3e0', '#f39c12', 'GRU', 'z[t] → h[t+1]', 12);
+  box(660,  40, 130, 55, '#e8f2ff', '#2d7ff9', 'h[t+1]', '200 · 下一帧记忆', 12);
+  line(625, 68, 658, 68);
+  s += `<text x="450" y="30" font-size="12" fill="#f39c12">第 t+1 帧：消费上一帧的 z[t] + a[t+1] + 本体[t+1]</text>`;
+  box(450, 145, 110, 50, '#f4f6f8', '#95a5a6', 'cat(h,z)', '232', 12);
+  box(620, 145, 120, 50, '#f4f6f8', '#95a5a6', 'obs_pred', null, 13);
+  box(790, 145, 110, 50, '#f5eef8', '#8e44ad', 'emb_pred', '256', 13);
+  box(950,  60, 140, 50, '#f4f6f8', '#95a5a6', 'Decoder', '→ 图(3,64,64)', 12);
+  box(950, 145, 160, 50, '#fff8e6', '#f5b041', 'emb loss', '与真实 emb 比', 12);
+
+  box(620, 235, 120, 50, '#f4f6f8', '#95a5a6', 'proprio_pred', null, 13);
+  box(790, 235, 160, 50, '#fff8e6', '#f5b041', '本体 loss', '与真实本体比', 12);
+
+  s += `<text x="1035" y="90" font-size="12" fill="#6b7c8d">与真实图像比</text>`;
+  s += `<text x="355" y="118" font-size="12" fill="#e74c3c">① 往未来</text>`;
+
+  line(165, 78,  228, 152, 'ap5', '#8e44ad');
+  line(165, 192, 228, 178, 'ag5', '#27ae60');
+
+  poly('330,160 395,160 395,68 448,68');
+  line(330, 180, 448, 172);
+  line(560, 170, 618, 170);
+  line(740, 170, 788, 170);
+  line(900, 170, 948, 170);
+  poly('815,145 815,110 948,110');
+  poly('505,195 505,260 618,260');
+  line(740, 260, 788, 260);
+
+  s += `<polyline points="775,95 775,300 90,300 90,223" fill="none" stroke="#95a5a6" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#a5)"/>`;
+  s += `<text x="430" y="318" text-anchor="middle" font-size="12" fill="#95a5a6">循环：h[t+1] + emb[t+1] → posterior → z[t+1]（进入下一帧，再次兵分三路）</text>`;
+  s += `<text x="430" y="342" text-anchor="middle" font-size="12" fill="#2d7ff9">时间对齐：本帧 posterior 用【h[t] + emb[t]】算出 z[t]；而 h[t] 是 GRU 消费【上一帧 z[t-1]】产出的</text>`;
+
+  s += `</svg>`;
+  document.getElementById('zGo').innerHTML = s;
+})();
+
+/* ============ prior vs posterior（开卷 / 闭卷） ============ */
+(function(){
+  const W = 960, H = 300;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:960px">`;
+  s += `<defs>
+    <marker id="a7" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker>
+    <marker id="ap7" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8e44ad"/></marker>
+    <marker id="ag7" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#27ae60"/></marker>
+  </defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||13}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  function line(x1,y1,x2,y2,mk,color){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color||'#7f8c8d'}" stroke-width="2" marker-end="url(#${mk||'a7'})"/>`;
+  }
+
+  box(30,  120, 100, 50, '#e8f2ff', '#2d7ff9', 'h', '200 · 记忆', 13);
+  box(30,  215, 100, 45, '#eafaf1', '#27ae60', 'emb', '256 · 当前图像', 12);
+
+  box(200,  50, 175, 60, '#f5eef8', '#8e44ad', 'prior', '只凭记忆猜 p(z|h)', 12);
+  box(200, 180, 175, 60, '#eafaf1', '#27ae60', 'posterior', '看了图像 q(z|h,emb)', 12);
+
+  box(430, 108, 105, 55, '#fff8e6', '#f5b041', 'KL 差距', '逼 p 追上 q', 12);
+  box(580, 108, 115, 55, '#fff8e6', '#f5b041', '选 z', '训练→q / 想象→p', 12);
+  box(740, 108,  90, 55, '#fdecea', '#e74c3c', 'z', '32', 14);
+
+  line(130, 138, 198, 80, 'ap7', '#8e44ad');
+  line(130, 152, 198, 205, 'ag7', '#27ae60');
+  line(130, 237, 198, 215, 'ag7', '#27ae60');
+  line(375, 80,  428, 128, 'ap7', '#8e44ad');
+  line(375, 210, 428, 148, 'ag7', '#27ae60');
+  line(535, 135, 578, 135);
+  line(695, 135, 738, 135);
+
+  s += `<text x="850" y="125" font-size="12" fill="#22303f">→ 预测</text>`;
+  s += `<text x="850" y="145" font-size="12" fill="#22303f">→ 重建</text>`;
+  s += `<text x="850" y="165" font-size="12" fill="#22303f">→ 想象</text>`;
+
+  s += `<text x="200" y="270" font-size="12" fill="#8e44ad">闭卷：没图也能算（想象时唯一可用）</text>`;
+  s += `<text x="200" y="288" font-size="12" fill="#27ae60">开卷：有图才算得准（训练时用）</text>`;
+
+  s += `</svg>`;
+  document.getElementById('priorPost').innerHTML = s;
+})();
+
+/* ============ 路②③开头的总览图（复用 zGo） ============ */
+(function(){
+  const W = 1120, H = 360;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:1120px">`;
+  s += `<defs>
+    <marker id="a5b" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker>
+    <marker id="ap5b" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8e44ad"/></marker>
+    <marker id="ag5b" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#27ae60"/></marker>
+  </defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||13}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  function line(x1,y1,x2,y2,mk,color){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color||'#7f8c8d'}" stroke-width="2" marker-end="url(#${mk||'a5b'})"/>`;
+  }
+  function poly(pts,mk,color){
+    s += `<polyline points="${pts}" fill="none" stroke="${color||'#7f8c8d'}" stroke-width="2" marker-end="url(#${mk||'a5b'})"/>`;
+  }
+
+  s += `<text x="15" y="28" font-size="12" fill="#6b7c8d">z 从哪来（第 t 帧，两种模式二选一）：</text>`;
+  box(15,  50, 150, 55, '#f5eef8', '#8e44ad', 'prior', 'h[t] 只凭记忆', 13);
+  box(15, 165, 150, 55, '#eafaf1', '#27ae60', 'posterior', 'h[t] + emb[t]', 13);
+
+  box(230, 140, 100, 60, '#fdecea', '#e74c3c', 'z[t]', '32', 14);
+
+  box(450,  40, 175, 55, '#fff3e0', '#f39c12', 'GRU', 'z[t] → h[t+1]', 12);
+  box(660,  40, 130, 55, '#e8f2ff', '#2d7ff9', 'h[t+1]', '200 · 下一帧记忆', 12);
+  line(625, 68, 658, 68);
+  s += `<text x="450" y="30" font-size="12" fill="#f39c12">第 t+1 帧：消费上一帧的 z[t] + a[t+1] + 本体[t+1]</text>`;
+  box(450, 145, 110, 50, '#f4f6f8', '#95a5a6', 'cat(h,z)', '232', 12);
+  box(620, 145, 120, 50, '#f4f6f8', '#95a5a6', 'obs_pred', null, 13);
+  box(790, 145, 110, 50, '#f5eef8', '#8e44ad', 'emb_pred', '256', 13);
+  box(950,  60, 140, 50, '#f4f6f8', '#95a5a6', 'Decoder', '→ 图(3,64,64)', 12);
+  box(950, 145, 160, 50, '#fff8e6', '#f5b041', 'emb loss', '与真实 emb 比', 12);
+
+  box(620, 235, 120, 50, '#f4f6f8', '#95a5a6', 'proprio_pred', null, 13);
+  box(790, 235, 160, 50, '#fff8e6', '#f5b041', '本体 loss', '与真实本体比', 12);
+
+  s += `<text x="1035" y="90" font-size="12" fill="#6b7c8d">与真实图像比</text>`;
+  s += `<text x="355" y="118" font-size="12" fill="#e74c3c">① 往未来（已讲）</text>`;
+  s += `<text x="530" y="205" font-size="12" fill="#2d7ff9">②③ 往当前预测（本节）</text>`;
+
+  line(165, 78,  228, 152, 'ap5b', '#8e44ad');
+  line(165, 192, 228, 178, 'ag5b', '#27ae60');
+
+  poly('330,160 395,160 395,68 448,68');
+  line(330, 180, 448, 172);
+  line(560, 170, 618, 170);
+  line(740, 170, 788, 170);
+  line(900, 170, 948, 170);
+  poly('815,145 815,110 948,110');
+  poly('505,195 505,260 618,260');
+  line(740, 260, 788, 260);
+
+  s += `<polyline points="775,95 775,300 90,300 90,223" fill="none" stroke="#95a5a6" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#a5b)"/>`;
+  s += `<text x="430" y="318" text-anchor="middle" font-size="12" fill="#95a5a6">循环：h[t+1] + emb[t+1] → posterior → z[t+1]（进入下一帧，再次兵分三路）</text>`;
+  s += `<text x="430" y="342" text-anchor="middle" font-size="12" fill="#2d7ff9">时间对齐：本帧 posterior 用【h[t] + emb[t]】算出 z[t]；而 h[t] 是 GRU 消费【上一帧 z[t-1]】产出的</text>`;
+
+  s += `</svg>`;
+  document.getElementById('zGo2').innerHTML = s;
+})();
+</script>
+</body>
+</html>

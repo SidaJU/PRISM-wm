@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 · 训练时到底在优化什么（loss 四项）</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#fff; --ink:#22303f; --muted:#6b7c8d;
+    --line:#e4e9ef; --r:#e74c3c; --g:#27ae60; --b:#3498db;
+    --hl:#f5b041; --pp:#8e44ad; --accent:#2d7ff9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.75}
+  .wrap{max-width:1020px;margin:0 auto;padding:34px 20px 90px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 26px;margin-bottom:20px}
+  h2{font-size:19px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{display:inline-block;min-width:27px;height:27px;line-height:27px;text-align:center;
+          background:var(--accent);color:#fff;border-radius:8px;font-size:14px;margin-right:9px}
+  h3{font-size:15px;margin:20px 0 8px;color:#34495e}
+  p{color:#3c4c5c;margin:10px 0}
+  .note{background:#eef6ff;border-left:4px solid var(--accent);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .key{background:#fff8e6;border-left:4px solid var(--hl);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .warn{background:#fdecea;border-left:4px solid var(--r);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .ok{background:#eafaf1;border-left:4px solid var(--g);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .cap{text-align:center;color:var(--muted);font-size:13px;margin-top:10px}
+  table{border-collapse:collapse;margin:12px auto;font-size:14px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 13px;text-align:left}
+  th{background:#f4f6f8;color:#34495e}
+  code{background:#f4f6f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  pre{background:#f4f6f8;padding:12px 16px;border-radius:8px;overflow-x:auto;
+      font-family:Consolas,monospace;font-size:13px;line-height:1.6;color:#2c3e50}
+  ul{padding-left:20px;font-size:14px}
+  li{margin:5px 0}
+  svg{display:block;margin:0 auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>训练时到底在优化什么：loss 的四项</h1>
+  <p class="sub">PRISM-WM 笔记 05 · 图解版 · 数字可用 <code>python prism/docs/demo_05_loss.py</code> 复现</p>
+
+  <div style="background:#fff;border:1px solid #e4e9ef;border-radius:14px;padding:16px 22px;margin-bottom:20px;font-size:14px">
+    <b>学习进度</b>
+    <table style="margin-top:8px">
+      <tr><th>笔记</th><th>内容</th><th>状态</th></tr>
+      <tr><td>01</td><td>一帧 → Encoder → 256 维 emb</td><td>✅</td></tr>
+      <tr><td>02</td><td>卷积 / 拉平 / 全连接</td><td>✅</td></tr>
+      <tr><td>03</td><td>通道数从哪来</td><td>✅</td></tr>
+      <tr><td>04</td><td>RSSM：emb → posterior → z → 三条路 → prior/posterior 协作</td><td>✅</td></tr>
+      <tr><td><b>05</b></td><td><b>loss 四项（训练目标）</b></td><td><b>← 当前</b></td></tr>
+      <tr><td>06</td><td>imagine()：让模型真正会"做梦"</td><td>⬜</td></tr>
+    </table>
+  </div>
+
+  <!-- 0 -->
+  <section>
+    <h2><span class="num">0</span>一句话</h2>
+    <p>训练就是一件事：<b>让四个误差都变小</b>。它们加起来就是总 loss，
+       梯度下降沿着它去更新所有参数。</p>
+    <pre>total = recon_weight × 重建
+      + emb_weight    × emb 预测
+      + proprio_weight× 本体预测
+      + kl_weight     × KL</pre>
+    <div class="key">这四个误差，正好对应笔记 04 里那三条路的尽头
+      （②③ → 重建 / emb / 本体，prior vs posterior → KL）。
+      <b>前面讲的所有结构，到这里才有了"训练目标"。</b></div>
+  </section>
+
+  <!-- 1 -->
+  <section>
+    <h2><span class="num">1</span>四项总览</h2>
+    <div id="lossMap"></div>
+    <div class="cap">四项各自算一个误差，加权求和得到总 loss</div>
+
+    <table>
+      <tr><th>项</th><th>拿什么和什么比</th><th>形状</th><th>实测值（未训练）</th></tr>
+      <tr><td><b>重建</b></td><td>Decoder 出的图 vs 真实图像</td><td>(32,1,3,64,64)</td><td><code>0.043130</code></td></tr>
+      <tr><td><b>emb</b></td><td><code>emb_pred</code> vs <code>emb</code>（Encoder 摘要）</td><td>(32,1,256)</td><td><code>0.058420</code></td></tr>
+      <tr><td><b>本体</b></td><td><code>proprio_pred</code> vs 真实本体</td><td>(32,1,10)</td><td><code>0.338434</code></td></tr>
+      <tr><td><b>KL</b></td><td>prior 分布 vs posterior 分布</td><td>(32,1)</td><td><code>0.238377</code></td></tr>
+      <tr><td><b>合计</b></td><td>—</td><td>—</td><td><b><code>0.678362</code></b></td></tr>
+    </table>
+    <p style="font-size:13px;color:#6b7c8d">四项用的都是 <b>MSE（均方误差）</b>，
+       也就是"差的平方取平均"——除了 KL，它有专门的公式（下面讲）。</p>
+  </section>
+
+  <!-- 2 -->
+  <section>
+    <h2><span class="num">2</span>逐项拆解</h2>
+
+    <h3>① 重建 loss：逼模型把画面还原出来</h3>
+    <pre>recon = torch.mean((out['recon'] - images) ** 2)</pre>
+    <p>Decoder 把 <code>emb_pred</code> 还原成图，和真实输入图像逐像素比。</p>
+    <div class="note"><b>这一项最重要</b>：它是<b>唯一直接训练 Encoder 的信号</b>。
+       模型能不能看懂画面，全靠它。</div>
+
+    <h3>② emb loss：在"摘要空间"里比</h3>
+    <pre>emb_mse = torch.mean((out['emb_pred'] - out['emb'].detach()) ** 2)</pre>
+    <p>不和像素比，而是和 Encoder 算出的 256 维摘要比 —— 相当于在<b>语义层面</b>比。</p>
+    <p>两层监督配合（像素 + 摘要），逼着 32 维的 z 真的留住关键信息。</p>
+
+    <h3>③ 本体 loss：猜机械臂自己的状态</h3>
+    <pre>proprio_mse = torch.mean((out['proprio_pred'] - proprio) ** 2)</pre>
+    <p>低维、精确、和动作强相关，给训练一个稳定的辅助信号。</p>
+
+    <h3>④ KL loss：逼 prior 追上 posterior</h3>
+    <pre>kl = 0.5 * (lv_p - lv_q + (lv_q.exp() + (mu_q - mu_p)**2) / lv_p.exp().clamp(min=1e-4) - 1)
+kl = torch.mean(kl)</pre>
+    <p>这是两个高斯分布之间差距的<b>解析公式</b>（不用采样估算）。
+       它衡量的就是笔记 04 讲的那件事：<b>prior 和 posterior 差多远</b>。</p>
+
+    <p><b>先回顾这两个分布</b>（详见笔记 04）：</p>
+    <table>
+      <tr><th></th><th>输入</th><th>含义</th><th>类比</th></tr>
+      <tr><td><b>posterior q</b></td><td>h + 当前图像 emb</td><td>看了图，判断准</td><td>开卷考试</td></tr>
+      <tr><td><b>prior p</b></td><td>只有 h</td><td>只凭记忆，一开始差</td><td>闭卷考试</td></tr>
+    </table>
+
+    <p><code>KL(q ‖ p)</code> 的作用：<b>逼 prior（闭卷）去模仿 posterior（开卷）</b>。</p>
+    <p>也就是训练会强迫「只凭记忆的猜测」尽量接近「看过真相后的判断」。
+       这样一来，记忆就被训练成<b>能自己补全看不见的信息</b>——这正是遮挡场景需要的能力。</p>
+
+    <div class="key"><b>为什么非有它不可</b>：<br>
+      想象（做梦）时没有图像，只能用 prior。<br>
+      如果训练时不逼 prior 学好，那模型<b>根本没法想象</b> ——
+      KL 就是"想象力"的来源。</div>
+
+    <p style="font-size:13px;color:#6b7c8d">prior / posterior 的结构对比、训练时怎么协作，
+       见<b>笔记 04「源」一节</b>。</p>
+  </section>
+
+  <!-- 3 -->
+  <section>
+    <h2><span class="num">3</span>一个关键细节：为什么写 <code>.detach()</code></h2>
+    <p>emb loss 那行有个 <code>out['emb'].detach()</code>，看起来不起眼，作用很大。</p>
+    <table>
+      <tr><th>写法</th><th>MSE 数值</th><th>梯度会不会流回 Encoder</th></tr>
+      <tr><td><code>(emb_pred - emb.detach())</code></td><td>0.058420</td><td><b>不会</b></td></tr>
+      <tr><td><code>(emb_pred - emb)</code></td><td>0.058420</td><td>会</td></tr>
+    </table>
+    <p><b>数值完全一样，区别只在梯度方向。</b></p>
+    <div class="warn">如果不 detach：预测头会为了"让误差变小"，
+       去<b>改 Encoder 的输出</b>（把摘要压成容易预测的样子）——
+       这会让学到的表征退化（表征坍塌）。<br>
+       加 detach 后：<b>Encoder 只由重建 loss 训练</b>，预测头只能自己追。</div>
+  </section>
+
+  <!-- 4 -->
+  <section>
+    <h2><span class="num">4</span>权重与 free_bits</h2>
+
+    <h3>四个权重</h3>
+    <table>
+      <tr><th>参数</th><th>默认值</th><th>控制哪一项</th></tr>
+      <tr><td><code>recon_weight</code></td><td>1.0</td><td>重建（像素）</td></tr>
+      <tr><td><code>emb_weight</code></td><td>1.0</td><td>emb 预测（摘要）</td></tr>
+      <tr><td><code>proprio_weight</code></td><td>1.0</td><td>本体预测</td></tr>
+      <tr><td><code>kl_weight</code></td><td>1.0</td><td>KL</td></tr>
+    </table>
+    <p>调它们就是调"更看重哪一面"。比如想让画面更清晰，就加大 <code>recon_weight</code>。</p>
+
+    <h3>free_bits：防止 KL 塌成 0</h3>
+    <pre>if free_bits > 0:
+    kl = torch.clamp(kl, min=free_bits)</pre>
+    <p>如果不设下限，模型可能发现"干脆不用 z"最省事 —— KL 会降到接近 0，
+       潜变量就白学了（这叫 <b>posterior collapse</b>）。</p>
+    <table>
+      <tr><th>free_bits</th><th>clamp 后 KL 均值</th></tr>
+      <tr><td>0.0</td><td>0.2384</td></tr>
+      <tr><td>0.1</td><td>0.2384（还没到下限）</td></tr>
+      <tr><td>0.5</td><td><b>0.5000</b>（被顶到下限）</td></tr>
+    </table>
+    <p style="font-size:13px;color:#6b7c8d">KL 原始范围：0.1414 ~ 0.3840，均值 0.2384。</p>
+  </section>
+
+  <!-- 5 -->
+  <section>
+    <h2><span class="num">5</span>实测：遮住画面后各项怎么变</h2>
+    <p>把第 10~19 帧涂黑，看四项 loss 的反应：</p>
+    <table>
+      <tr><th>项</th><th>正常</th><th>遮挡后</th><th>变化</th></tr>
+      <tr><td>重建</td><td>0.043130</td><td><b>0.116993</b></td><td>↑ 明显变差</td></tr>
+      <tr><td>emb</td><td>0.058420</td><td>0.053117</td><td>略降</td></tr>
+      <tr><td>本体</td><td>0.338434</td><td>0.336074</td><td>几乎不变</td></tr>
+      <tr><td>KL</td><td>0.238377</td><td>0.217843</td><td>略降</td></tr>
+    </table>
+    <div class="note">重建 loss 反应最大是<b>合理的</b>：它是唯一直接比像素的一项，
+       画面被涂黑它立刻就受不了。<br>
+       而本体 loss 几乎不变 —— 因为机械臂自己的状态不受画面影响（这正好说明路③是独立的监督信号）。</div>
+  </section>
+
+  <!-- 6 -->
+  <section>
+    <h2><span class="num">6</span>三个记忆点</h2>
+    <ul>
+      <li>四项 loss：<b>重建（像素）/ emb（摘要）/ 本体 / KL（分布差距）</b>，加权求和</li>
+      <li>emb loss 里的 <code>.detach()</code> 让 <b>Encoder 只由重建 loss 训练</b>，防止表征坍塌</li>
+      <li><b>KL 是"想象力"的来源</b>：没有它，prior 学不会，模型就没法做梦</li>
+    </ul>
+    <p style="margin-top:16px">自己跑：<code>python prism/docs/demo_05_loss.py</code></p>
+    <div class="note"><b>下一小点（笔记 06）</b>：给 RSSM 补上 <code>imagine()</code> ——
+      用 prior 一路往前推，让模型真正会"做梦"，并用它跑 MPC。</div>
+  </section>
+
+</div>
+
+<script>
+/* ============ 四项 loss 汇总图 ============ */
+(function(){
+  const W = 960, H = 300;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:960px">`;
+  s += `<defs><marker id="a8" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||13}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  function line(x1,y1,x2,y2){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#7f8c8d" stroke-width="2" marker-end="url(#a8)"/>`;
+  }
+
+  box(30,  30, 195, 55, '#e8f2ff', '#3498db', '重建 loss', '图像 vs 重建图（像素）', 12);
+  box(30, 100, 195, 55, '#f5eef8', '#8e44ad', 'emb loss', 'emb_pred vs emb（摘要）', 12);
+  box(30, 170, 195, 55, '#fff8e6', '#f5b041', '本体 loss', '预测 vs 真实本体（10维）', 12);
+  box(30, 240, 195, 55, '#eafaf1', '#27ae60', 'KL loss', 'prior vs posterior（分布）', 12);
+
+  box(340, 120, 170, 65, '#f4f6f8', '#95a5a6', '加权求和', '各乘一个权重', 13);
+  box(600, 120, 165, 65, '#fdecea', '#e74c3c', 'total loss', '梯度下降优化它', 13);
+
+  line(225, 57,  338, 140);
+  line(225, 127, 338, 148);
+  line(225, 197, 338, 162);
+  line(225, 267, 338, 172);
+  line(510, 152, 598, 152);
+
+  s += `<text x="800" y="145" font-size="13" fill="#22303f">→ 反向传播</text>`;
+  s += `<text x="800" y="168" font-size="13" fill="#22303f">→ 更新所有参数</text>`;
+
+  s += `</svg>`;
+  document.getElementById('lossMap').innerHTML = s;
+})();
+</script>
+</body>
+</html>

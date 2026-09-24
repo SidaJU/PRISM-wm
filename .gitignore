@@ -1,0 +1,27 @@
+# ===== 权重（GitHub 单文件/仓库体积限制，且用户要求不入库）=====
+prism/ckpt/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# ===== 数据集 =====
+prism/data/
+*.npz
+*.npy
+
+# ===== 日志 =====
+*.log
+*.err
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ===== 编辑器 / 系统 =====
+.DS_Store
+Thumbs.db

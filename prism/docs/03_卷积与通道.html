@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · 卷积与通道（图解）</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#fff; --ink:#22303f; --muted:#6b7c8d;
+    --line:#e4e9ef; --r:#e74c3c; --g:#27ae60; --b:#3498db;
+    --hl:#f5b041; --out:#8e44ad; --accent:#2d7ff9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.75}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 20px 90px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 26px;margin-bottom:20px}
+  h2{font-size:19px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{display:inline-block;min-width:27px;height:27px;line-height:27px;text-align:center;
+          background:var(--accent);color:#fff;border-radius:8px;font-size:14px;margin-right:9px}
+  h3{font-size:15px;margin:20px 0 8px;color:#34495e}
+  p{color:#3c4c5c;margin:10px 0}
+  .note{background:#eef6ff;border-left:4px solid var(--accent);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .key{background:#fff8e6;border-left:4px solid var(--hl);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .warn{background:#fdecea;border-left:4px solid var(--r);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .flex{display:flex;gap:26px;flex-wrap:wrap;align-items:center;justify-content:center}
+  .cap{text-align:center;color:var(--muted);font-size:13px;margin-top:10px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 15px;
+         font-size:14px;cursor:pointer;margin:5px 6px 0 0}
+  button.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+  button:disabled{opacity:.38;cursor:default}
+  .calc{font-family:Consolas,"Courier New",monospace;font-size:14px;background:#f4f6f8;
+        padding:11px 15px;border-radius:8px;margin-top:14px;text-align:center;color:#2c3e50}
+  table{border-collapse:collapse;margin:12px auto;font-size:14px}
+  th,td{border:1px solid var(--line);padding:6px 13px;text-align:center}
+  th{background:#f4f6f8;color:#34495e}
+  code{background:#f4f6f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  ul{padding-left:20px;font-size:14px}
+  li{margin:5px 0}
+  .ctrls{text-align:center;margin-top:14px}
+  .lbl{font-size:13px;color:var(--muted);text-align:center;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>卷积 与 通道</h1>
+  <p class="sub">PRISM-WM 笔记 03 · 图解版 · 所有数字都可用 <code>python prism/docs/demo_03_channels.py</code> 复现</p>
+
+  <!-- 0 -->
+  <section>
+    <h2><span class="num">0</span>先澄清：括号里的数字是什么</h2>
+    <p>同一个东西有两种写法，很容易搞混：</p>
+    <table>
+      <tr><th>场合</th><th>排列</th><th>例子</th><th>通道位置</th></tr>
+      <tr><td>磁盘 / numpy</td><td><code>(H, W, C)</code></td><td><code>(64, 64, 3)</code></td><td>最后</td></tr>
+      <tr><td>PyTorch 张量</td><td><code>(C, H, W)</code></td><td><code>(3, 64, 64)</code></td><td>最前</td></tr>
+    </table>
+    <div class="note">所以本文里的 <code>(32, 32, 32)</code> 读作 <b>（通道 32，高 32，宽 32）</b>，
+    最后一个 32 <b>不是</b>通道。PyTorch 实际是 4 维 <code>(B, C, H, W)</code>，笔记里省略了 batch 维 B。</div>
+  </section>
+
+  <!-- 1 -->
+  <section>
+    <h2><span class="num">1</span>卷积 = 一个小窗口在图上滑</h2>
+    <p>为了能手算，用一张 <b>4×4</b> 的图和一个 <b>2×2</b> 的窗口
+       （<b>注意：2×2 只是教学例子</b>，真实网络用的是 4×4 的 kernel，见第 3 节）。
+       窗口从左上角开始，每次右移一格，到行尾换下一行。</p>
+    <div class="flex">
+      <div>
+        <div class="lbl">输入 4×4（黄色 = 当前窗口）</div>
+        <div id="inGrid"></div>
+      </div>
+      <div style="font-size:30px;color:var(--muted)">→</div>
+      <div>
+        <div class="lbl">输出 3×3（逐个填出来）</div>
+        <div id="outGrid"></div>
+      </div>
+    </div>
+    <div class="ctrls">
+      <button id="btnPrev" class="ghost">上一步</button>
+      <button id="btnNext">下一步</button>
+      <button id="btnAuto" class="ghost">自动播放</button>
+      <button id="btnReset" class="ghost">重置</button>
+    </div>
+    <div class="calc" id="calc">点「下一步」开始：窗口盖住 4 个数 → 加权求和 → 填进输出格</div>
+    <div class="cap">窗口每次移 1 格 = <b>stride=1</b>。2×2 的窗在 4×4 的图上只能停 3×3 = 9 个位置，所以输出是 3×3</div>
+    <div class="note"><b>这个演示是 stride=1</b>。真实 Encoder 用 <b>stride=2</b>：窗口每次跳 2 格，画面直接减半。
+      同一张 4×4 图，stride=2 时窗口只有 4 个位置（正好互不重叠铺满全图），输出变成 2×2：</div>
+    <div class="flex" id="stride2"></div>
+    <div class="cap">stride=2 的 4 个输出值，正好是 stride=1 那个 3×3 输出的四个角（6, −7, 7, −8）——跳着采样</div>
+    <table>
+      <tr><th>stride</th><th>输出尺寸公式</th><th>4×4 图 + 2×2 kernel</th><th>真实第一层 (64, k4, p1)</th></tr>
+      <tr><td>1</td><td>(n−k)/1 + 1</td><td>(4−2)/1+1 = <b>3</b></td><td>—</td></tr>
+      <tr><td>2</td><td>(n−k)/2 + 1</td><td>(4−2)/2+1 = <b>2</b></td><td>(64−4+2)/2+1 = <b>32</b></td></tr>
+    </table>
+    <div class="key"><b>三个要点</b>
+      <ul>
+        <li><b>权重共享</b>：kernel 只有 4 个参数，却产出了 9 个数 —— 同一组权重全图复用</li>
+        <li><b>只看局部</b>：每个输出只关心 2×2，不是整张图</li>
+        <li><b>权重是学出来的</b>：上面那个"找竖边"的核是为了好懂手写的，训练时会自己变成有用的样子</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section>
+    <h2><span class="num">2</span>kernel 不是 2D，是 3D</h2>
+    <p>真实第一层 kernel 的形状是 <code>(3, 4, 4)</code> —— 窗口是 <b>4×4</b>（不是演示里的 2×2），
+       共 3 层压在 R / G / B 上。三层各自算完，<b>加在一起</b>得到 1 个数。</p>
+    <div class="flex" id="ch3"></div>
+    <div class="cap">三个通道 × 各自的 kernel 层 → 三个数 → 相加 → <b>1 个数</b></div>
+    <div class="key"><b>这就是"为什么输出不是 3 通道"的答案</b>：
+      一个 kernel 把所有输入通道<b>汇总</b>成一个数，所以它只产出 <b>1 个</b>通道。</div>
+  </section>
+
+  <!-- 3 -->
+  <section>
+    <h2><span class="num">3</span>通道数 = kernel 的个数</h2>
+    <p>想要多少输出通道，就用多少个不同的 kernel。这是<b>我们自己定的</b>，与输入通道数无关。</p>
+    <div class="flex" id="kernels"></div>
+    <table>
+      <tr><th>kernel 个数 N</th><th>每个 kernel 形状</th><th>输入</th><th>输出</th><th>参数量</th></tr>
+      <tr><td>1</td><td><code>(3,4,4)</code></td><td><code>(3,64,64)</code></td><td><code>(1,32,32)</code></td><td>48</td></tr>
+      <tr><td>3</td><td><code>(3,4,4)</code></td><td><code>(3,64,64)</code></td><td><code>(3,32,32)</code></td><td>144</td></tr>
+      <tr><td><b>32</b></td><td><code>(3,4,4)</code></td><td><code>(3,64,64)</code></td><td><code>(32,32,32)</code></td><td><b>1536</b></td></tr>
+      <tr><td>256</td><td><code>(3,4,4)</code></td><td><code>(3,64,64)</code></td><td><code>(256,32,32)</code></td><td>12288</td></tr>
+    </table>
+    <div class="cap">kernel 尺寸固定 4×4（形状 (3,4,4)），变的只是<b>个数</b>；输出 64→32 是因为 stride=2, padding=1</div>
+  </section>
+
+  <!-- 4 -->
+  <section>
+    <h2><span class="num">4</span>完整旅程：画面变小，通道变多</h2>
+    <p>Encoder 的 4 层卷积就是这个规律。每层 <code>stride=2</code> 让画面减半，通道数则由我们递增。</p>
+    <div class="flex" id="journey"></div>
+    <div class="cap">位置越来越少（64→4），每个位置携带的信息越来越多（3→256）</div>
+
+    <h3>每层的 kernel 形状都不一样</h3>
+    <p>kernel 形状的规律：<code>(输出通道数, 输入通道数, 4, 4)</code> = （kernel 个数，每个 kernel 的层数，窗口）。
+       窗口永远是 4×4，但<b>层数跟着输入通道变，个数跟着输出通道变</b>：</p>
+    <table>
+      <tr><th>层</th><th>kernel 形状</th><th>解读</th></tr>
+      <tr><td><code>Conv(3→32)</code></td><td><code>(32, 3, 4, 4)</code></td><td>32 个 kernel，每个 3 层（压在 RGB 上）</td></tr>
+      <tr><td><code>Conv(32→64)</code></td><td><code>(64, 32, 4, 4)</code></td><td>64 个 kernel，每个 32 层（压在上层的 32 通道上）</td></tr>
+      <tr><td><code>Conv(64→128)</code></td><td><code>(128, 64, 4, 4)</code></td><td>128 个 kernel，每个 64 层</td></tr>
+      <tr><td><code>Conv(128→256)</code></td><td><code>(256, 128, 4, 4)</code></td><td>256 个 kernel，每个 128 层</td></tr>
+    </table>
+    <div class="key">所以"每层都是 (3,4,4)"是不对的——<b>只有第一层</b>是 (3,4,4)。
+      之后每层 kernel 的<b>层数</b>等于上一层的输出通道数。
+      这正呼应第 2 节：kernel 层数 = 输入通道数，而输入通道在逐层膨胀。</div>
+    <div class="key"><b>为什么不能一直保持 3 通道？</b><br>
+      画面缩小到 4×4 时，若只有 3 通道，就只剩 3×4×4 = 48 个数，信息全丢了。
+      信息只能往<b>通道数</b>里装，所以必须 3 → 32 → 64 → 128 → 256。</div>
+  </section>
+
+  <!-- 5 -->
+  <section>
+    <h2><span class="num">5</span>一个坑：padding</h2>
+    <p>写验证脚本时第一次漏了 <code>padding</code>，输出变成 <b>31</b> 而不是 32：</p>
+    <table>
+      <tr><th>设置</th><th>公式</th><th>输出尺寸</th></tr>
+      <tr><td><code>padding=1</code>（真实写法）</td><td>(64 − 4 + 2) / 2 + 1</td><td><b>32</b> ✓</td></tr>
+      <tr><td><code>padding=0</code></td><td>(64 − 4) / 2 + 1</td><td>31 ✗</td></tr>
+    </table>
+    <div class="note"><code>ObsEncoder</code> 用 <code>padding=1</code>，让尺寸<b>正好减半</b>（64→32→16→8→4）。</div>
+  </section>
+
+  <!-- 6 -->
+  <section>
+    <h2><span class="num">6</span>UE 类比：把它想成 G-buffer</h2>
+    <table>
+      <tr><th>Buffer</th><th>通道数</th><th>每个通道是什么</th></tr>
+      <tr><td>SceneColor</td><td>3</td><td>R / G / B</td></tr>
+      <tr><td>GBufferA</td><td>4</td><td>normal.xyz 等</td></tr>
+      <tr><td><b>我们的特征图</b></td><td><b>32</b></td><td>32 种"检测器"的结果</td></tr>
+    </table>
+    <p>每个 kernel = 一个<b>通道生成器</b>：读全部输入通道，产出 1 个新通道
+       （比如"这里有没有橙色方块的边缘"）。32 个 kernel = 跑 32 个滤镜 → 32 通道的 buffer。</p>
+  </section>
+
+  <!-- 7 -->
+  <section>
+    <h2><span class="num">7</span>三个记忆点</h2>
+    <ul>
+      <li><b>kernel 是 3D 的</b>：形状 <code>(输入通道, k, k)</code>，一个 kernel 把所有输入通道汇总成 <b>1 个数</b></li>
+      <li><b>输出通道数 = kernel 个数</b>，想设多少设多少，与输入通道数无关</li>
+      <li><b>排列顺序</b>：numpy 是 <code>(H,W,C)</code>，PyTorch 是 <code>(C,H,W)</code></li>
+    </ul>
+    <p style="margin-top:16px">自己跑一遍：<code>python prism/docs/demo_03_channels.py</code></p>
+    <div class="note"><b>下一小点</b>：一帧怎么变成 256 个数字已经讲完。
+      下一步进 <b>RSSM（动力学核心）</b> —— 它拿这 256 个数字，配上上一时刻的记忆和这一刻的动作，
+      去预测下一帧的 256 个数字。那一步开始，才真正叫"世界模型"。</div>
+  </section>
+
+</div>
+
+<script>
+/* ============ 工具：画网格 ============ */
+function gridSVG(data, cell, opts){
+  opts = opts || {};
+  const rows = data.length, cols = data[0].length;
+  const W = cols*cell, H = rows*cell;
+  let s = `<svg width="${W}" height="${H}" style="display:block">`;
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const v = data[r][c];
+    const bg = opts.bg || '#ffffff';
+    s += `<rect x="${c*cell}" y="${r*cell}" width="${cell}" height="${cell}" fill="${bg}" stroke="#cfd8e3"/>`;
+    s += `<text x="${c*cell+cell/2}" y="${r*cell+cell/2+5}" text-anchor="middle" font-size="14"
+           font-family="Consolas,monospace" fill="#22303f">${v}</text>`;
+  }
+  s += `</svg>`;
+  return s;
+}
+
+/* ============ 1. 滑动窗口演示 ============ */
+const IMG = [[1,2,3,1],[0,5,6,1],[1,7,8,1],[0,1,1,0]];
+const KK  = [[-1,1],[-1,1]];
+const CELL = 46;
+let step = 0;              // 0..8 = 正在填第 step 格；9 = 完成
+let timer = null;
+
+function outVal(r,c){
+  return IMG[r][c]*KK[0][0] + IMG[r][c+1]*KK[0][1]
+       + IMG[r+1][c]*KK[1][0] + IMG[r+1][c+1]*KK[1][1];
+}
+const OUT = [0,1,2].map(r => [0,1,2].map(c => outVal(r,c)));
+
+function renderIn(){
+  const W = 4*CELL, H = 4*CELL;
+  let s = `<svg width="${W}" height="${H}" style="display:block">`;
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++){
+    s += `<rect x="${c*CELL}" y="${r*CELL}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#cfd8e3"/>`;
+    s += `<text x="${c*CELL+CELL/2}" y="${r*CELL+CELL/2+5}" text-anchor="middle" font-size="15"
+           font-family="Consolas,monospace" fill="#22303f">${IMG[r][c]}</text>`;
+  }
+  if(step < 9){
+    const col = step % 3, row = Math.floor(step / 3);
+    s += `<rect id="hl" x="${col*CELL}" y="${row*CELL}" width="${2*CELL}" height="${2*CELL}"
+           fill="rgba(245,176,65,.28)" stroke="#f5b041" stroke-width="3" rx="3"/>`;
+  }
+  s += `<rect x="0" y="0" width="${2*CELL}" height="${2*CELL}" fill="none" stroke="#95a5a6"
+         stroke-width="1" stroke-dasharray="4" opacity=".55"/>`;
+  s += `</svg>`;
+  document.getElementById('inGrid').innerHTML = s;
+}
+
+function renderOut(){
+  const C = 54;
+  let s = `<svg width="${3*C}" height="${3*C}" style="display:block">`;
+  for(let r=0;r<3;r++) for(let c=0;c<3;c++){
+    const idx = r*3 + c;
+    const filled = idx < step;
+    const cur    = idx === step;
+    const fill = cur ? 'rgba(142,68,173,.22)' : (filled ? '#f3e9f7' : '#fff');
+    const stroke = cur ? '#8e44ad' : '#cfd8e3';
+    s += `<rect x="${c*C}" y="${r*C}" width="${C}" height="${C}" fill="${fill}"
+           stroke="${stroke}" stroke-width="${cur?3:1}" rx="3"/>`;
+    if(filled || cur){
+      s += `<text x="${c*C+C/2}" y="${r*C+C/2+6}" text-anchor="middle" font-size="16"
+             font-family="Consolas,monospace" fill="#8e44ad" font-weight="bold">${OUT[r][c]}</text>`;
+    }
+  }
+  s += `</svg>`;
+  document.getElementById('outGrid').innerHTML = s;
+}
+
+function renderCalc(){
+  const el = document.getElementById('calc');
+  if(step >= 9){
+    el.innerHTML = `9 个位置全部算完 —— 这就是一张 <b>特征图</b>（1 个通道）`;
+    return;
+  }
+  const col = step % 3, row = Math.floor(step / 3);
+  const a=IMG[row][col], b=IMG[row][col+1], c=IMG[row+1][col], d=IMG[row+1][col+1];
+  const w=[KK[0][0],KK[0][1],KK[1][0],KK[1][1]];
+  const f = v => v<0 ? `(${v})` : `${v}`;
+  el.innerHTML = `${a}×${f(w[0])} + ${b}×${f(w[1])} + ${c}×${f(w[2])} + ${d}×${f(w[3])} = <b>${OUT[row][col]}</b>
+                  <span style="color:#6b7c8d">　→ 填到输出第 ${row+1} 行第 ${col+1} 列</span>`;
+}
+
+function render(){ renderIn(); renderOut(); renderCalc();
+  document.getElementById('btnPrev').disabled = (step===0);
+  document.getElementById('btnNext').disabled = (step===9);
+}
+document.getElementById('btnNext').onclick = ()=>{ if(step<9){step++;render();} };
+document.getElementById('btnPrev').onclick = ()=>{ if(step>0){step--;render();} };
+document.getElementById('btnReset').onclick = ()=>{ stopAuto(); step=0; render(); };
+function stopAuto(){ if(timer){clearInterval(timer);timer=null;
+  document.getElementById('btnAuto').textContent='自动播放';} }
+document.getElementById('btnAuto').onclick = function(){
+  if(timer){ stopAuto(); return; }
+  if(step>=9) step=0;
+  this.textContent='暂停';
+  timer = setInterval(()=>{ if(step<9){step++;render();} else stopAuto(); }, 850);
+};
+render();
+
+/* ============ 1.5 stride=2 对比 ============ */
+(function(){
+  const CELL = 46;
+  const COLORS = ['#f5b041', '#e67e22', '#16a085', '#8e44ad'];
+  let s = `<svg width="${4*CELL}" height="${4*CELL}" style="display:block">`;
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++){
+    s += `<rect x="${c*CELL}" y="${r*CELL}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#cfd8e3"/>`;
+    s += `<text x="${c*CELL+CELL/2}" y="${r*CELL+CELL/2+5}" text-anchor="middle" font-size="15"
+           font-family="Consolas,monospace" fill="#22303f">${IMG[r][c]}</text>`;
+  }
+  [[0,0],[0,2],[2,0],[2,2]].forEach((p,i)=>{
+    s += `<rect x="${p[1]*CELL}" y="${p[0]*CELL}" width="${2*CELL}" height="${2*CELL}"
+           fill="${COLORS[i]}22" stroke="${COLORS[i]}" stroke-width="3" rx="4"/>`;
+  });
+  s += `</svg>`;
+
+  const OUT2 = [[6,-7],[7,-8]];
+  let o = `<svg width="${2*CELL}" height="${2*CELL}" style="display:block">`;
+  OUT2.forEach((row,r)=>row.forEach((v,c)=>{
+    const col = COLORS[r*2+c];
+    o += `<rect x="${c*CELL}" y="${r*CELL}" width="${CELL}" height="${CELL}" fill="${col}22"
+           stroke="${col}" stroke-width="3" rx="4"/>`;
+    o += `<text x="${c*CELL+CELL/2}" y="${r*CELL+CELL/2+6}" text-anchor="middle" font-size="16"
+           font-family="Consolas,monospace" fill="${col}" font-weight="bold">${v}</text>`;
+  }));
+  o += `</svg>`;
+
+  document.getElementById('stride2').innerHTML =
+    `<div style="text-align:center"><div class="lbl">同一张 4×4 图（stride=2：4 个窗口互不重叠）</div>${s}</div>
+     <div style="font-size:26px;color:#95a5a6">→</div>
+     <div style="text-align:center"><div class="lbl">输出 2×2</div>${o}</div>`;
+})();
+
+/* ============ 2. 三通道汇总 ============ */
+(function(){
+  const R = [[1,2,3,1],[0,5,6,1],[1,7,8,1],[0,1,1,0]];
+  const G = [[1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1]];
+  const B = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+  const KR = [[1,0],[0,1]], KG = [[0,1],[1,0]], KB = [[1,1],[1,1]];
+  const cell = 26;
+  function small(data, tint){
+    let s = `<svg width="${4*cell}" height="${4*cell}" style="display:block">`;
+    for(let r=0;r<4;r++) for(let c=0;c<4;c++){
+      s += `<rect x="${c*cell}" y="${r*cell}" width="${cell}" height="${cell}" fill="${tint}" stroke="#cfd8e3"/>`;
+      s += `<text x="${c*cell+cell/2}" y="${r*cell+cell/2+4}" text-anchor="middle" font-size="12"
+             font-family="Consolas,monospace" fill="#22303f">${data[r][c]}</text>`;
+    }
+    s += `<rect x="0" y="0" width="${2*cell}" height="${2*cell}" fill="rgba(245,176,65,.35)"
+           stroke="#f5b041" stroke-width="2"/>`;
+    s += `</svg>`;
+    return s;
+  }
+  function kern(k){
+    let s = `<svg width="${2*cell}" height="${2*cell}" style="display:block">`;
+    for(let r=0;r<2;r++) for(let c=0;c<2;c++){
+      s += `<rect x="${c*cell}" y="${r*cell}" width="${cell}" height="${cell}" fill="#fff" stroke="#8e44ad"/>`;
+      s += `<text x="${c*cell+cell/2}" y="${r*cell+cell/2+4}" text-anchor="middle" font-size="12"
+             font-family="Consolas,monospace" fill="#8e44ad">${k[r][c]}</text>`;
+    }
+    s += `</svg>`;
+    return s;
+  }
+  const box = (html,label,color)=>`<div style="text-align:center">
+      <div style="font-size:12px;color:${color};margin-bottom:4px">${label}</div>${html}</div>`;
+  const items = [
+    {d:R,k:KR,c:'var(--r)',n:'R'},
+    {d:G,k:KG,c:'var(--g)',n:'G'},
+    {d:B,k:KB,c:'var(--b)',n:'B'}
+  ];
+  let html = '';
+  items.forEach(it=>{
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      ${box(small(it.d, 'rgba(0,0,0,.05)'), it.n+' 通道（4×4）', it.c)}
+      <span style="font-size:18px;color:#8e44ad">×</span>
+      ${box(kern(it.k), 'kernel 的一层', '#8e44ad')}
+      <span style="font-size:18px;color:#6b7c8d">=</span>
+      <div style="min-width:38px;text-align:center;font-size:19px;font-weight:bold;color:#8e44ad">
+        ${it.n==='R'?6:(it.n==='G'?2:0)}</div>
+    </div>`;
+  });
+  html += `<div style="text-align:center;margin-top:6px;padding-top:10px;border-top:2px solid #e4e9ef;width:100%">
+    <span style="font-size:15px">6 + 2 + 0 = </span>
+    <span style="font-size:26px;font-weight:bold;color:#8e44ad">8</span>
+    <div style="font-size:13px;color:#6b7c8d;margin-top:4px">三个通道加起来 → 只得到 <b>1 个数</b></div></div>`;
+  document.getElementById('ch3').innerHTML = html;
+})();
+
+/* ============ 3. kernel 个数 → 通道数 ============ */
+(function(){
+  const DX=13, DY=7;
+  function plane(x,y,w,h,color){
+    return `<polygon points="${x},${y} ${x+w},${y} ${x+w+DX},${y-DY} ${x+DX},${y-DY}"
+             fill="${color}" stroke="rgba(0,0,0,.25)" stroke-width="1"/>`;
+  }
+  function stack(layers,w,h,colors,baseY){
+    let s='';
+    for(let i=layers-1;i>=0;i--){
+      const y = baseY - i*6;
+      s += plane(0, y, w, h, colors(i));
+    }
+    return s;
+  }
+  // 输入：3 层（R/G/B）
+  let inSvg = `<svg width="170" height="130" style="display:block">`;
+  const cols = ['#e74c3c','#27ae60','#3498db'];
+  for(let i=2;i>=0;i--) inSvg += plane(8, 96 - i*7, 74, 30, cols[i]);
+  inSvg += `<text x="52" y="122" text-anchor="middle" font-size="12" fill="#6b7c8d">输入 (3,64,64)</text>`;
+  inSvg += `<text x="130" y="70" font-size="11" fill="#6b7c8d">R</text>`;
+  inSvg += `<text x="130" y="60" font-size="11" fill="#6b7c8d">G</text>`;
+  inSvg += `<text x="130" y="50" font-size="11" fill="#6b7c8d">B</text>`;
+  inSvg += `</svg>`;
+
+  // kernel 堆
+  let kSvg = `<svg width="150" height="130" style="display:block">`;
+  for(let i=0;i<5;i++) kSvg += plane(6, 92 - i*8, 40, 16, `rgba(142,68,173,${0.35+i*0.13})`);
+  kSvg += `<text x="60" y="70" font-size="15" fill="#8e44ad" font-weight="bold">×32</text>`;
+  kSvg += `<text x="46" y="122" text-anchor="middle" font-size="12" fill="#6b7c8d">32 个 kernel</text>`;
+  kSvg += `</svg>`;
+
+  // 输出：32 层（画 10 层示意）
+  let oSvg = `<svg width="180" height="130" style="display:block">`;
+  for(let i=9;i>=0;i--) oSvg += plane(10, 92 - i*6, 52, 22, `rgba(142,68,173,${0.25+i*0.075})`);
+  oSvg += `<text x="46" y="120" text-anchor="middle" font-size="12" fill="#6b7c8d">输出 (32,32,32)</text>`;
+  oSvg += `<text x="120" y="66" font-size="11" fill="#8e44ad">32 通道</text>`;
+  oSvg += `</svg>`;
+
+  document.getElementById('kernels').innerHTML =
+    `<div style="text-align:center">${inSvg}</div>
+     <div style="font-size:26px;color:#8e44ad">→</div>
+     <div style="text-align:center">${kSvg}</div>
+     <div style="font-size:26px;color:#8e44ad">→</div>
+     <div style="text-align:center">${oSvg}</div>`;
+})();
+
+/* ============ 4. 完整旅程 ============ */
+(function(){
+  const stages = [
+    {ch:3,   size:64, px:74},
+    {ch:32,  size:32, px:56},
+    {ch:64,  size:16, px:40},
+    {ch:128, size:8,  px:28},
+    {ch:256, size:4,  px:20}
+  ];
+  const DX=12, DY=6;
+  let html = '';
+  stages.forEach((st,i)=>{
+    let s = `<svg width="130" height="120" style="display:block">`;
+    const layers = 5;
+    for(let j=layers-1;j>=0;j--){
+      const y = 92 - j*6;
+      s += `<polygon points="20,${y} ${20+st.px},${y} ${20+st.px+DX},${y-DY} ${20+DX},${y-DY}"
+             fill="rgba(45,127,249,${0.22+j*0.14})" stroke="rgba(0,0,0,.2)"/>`;
+    }
+    s += `<text x="${20+st.px/2}" y="112" text-anchor="middle" font-size="12" fill="#22303f" font-weight="bold">${st.size}×${st.size}</text>`;
+    s += `<text x="${20+st.px/2+26}" y="46" font-size="11" fill="#2d7ff9">通道 ${st.ch}</text>`;
+    s += `</svg>`;
+    html += `<div style="text-align:center">
+        <div style="font-size:12px;color:#6b7c8d;margin-bottom:4px">第 ${i+1} 层</div>${s}</div>`;
+    if(i<stages.length-1) html += `<div style="font-size:22px;color:#95a5a6">→</div>`;
+  });
+  document.getElementById('journey').innerHTML = html;
+})();
+</script>
+</body>
+</html>
