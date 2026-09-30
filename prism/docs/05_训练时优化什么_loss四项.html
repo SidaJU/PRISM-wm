@@ -53,8 +53,9 @@
       <tr><td>02</td><td>卷积 / 拉平 / 全连接</td><td>✅</td></tr>
       <tr><td>03</td><td>通道数从哪来</td><td>✅</td></tr>
       <tr><td>04</td><td>RSSM：emb → posterior → z → 三条路 → prior/posterior 协作</td><td>✅</td></tr>
-      <tr><td><b>05</b></td><td><b>loss 四项（训练目标）</b></td><td><b>← 当前</b></td></tr>
-      <tr><td>06</td><td>imagine()：让模型真正会"做梦"</td><td>⬜</td></tr>
+      <tr><td>05</td><td>loss 四项（训练目标）</td><td>✅</td></tr>
+      <tr><td>06</td><td>训练流程与数据流转</td><td>⬜</td></tr>
+      <tr><td>07</td><td>imagine()：让模型真正会"做梦"</td><td>⬜</td></tr>
     </table>
   </div>
 
@@ -114,6 +115,47 @@
 kl = torch.mean(kl)</pre>
     <p>这是两个高斯分布之间差距的<b>解析公式</b>（不用采样估算）。
        它衡量的就是笔记 04 讲的那件事：<b>prior 和 posterior 差多远</b>。</p>
+
+    <h3>公式里每个符号是什么</h3>
+    <table>
+      <tr><th>符号</th><th>是谁出的</th><th>含义</th><th>维度</th></tr>
+      <tr><td><code>mu_p</code></td><td><b>prior</b> 网络</td><td>闭卷猜的<b>中心</b></td><td>(B, 32)</td></tr>
+      <tr><td><code>lv_p</code></td><td><b>prior</b> 网络</td><td>闭卷猜的<b>不确定度</b>（log 方差）</td><td>(B, 32)</td></tr>
+      <tr><td><code>mu_q</code></td><td><b>posterior</b> 网络</td><td>开卷判断的<b>中心</b></td><td>(B, 32)</td></tr>
+      <tr><td><code>lv_q</code></td><td><b>posterior</b> 网络</td><td>开卷判断的<b>不确定度</b></td><td>(B, 32)</td></tr>
+    </table>
+    <p>下标 <b>p = prior</b>（闭卷）、<b>q = posterior</b>（开卷）。<code>lv.exp()</code> = 真正的方差。</p>
+    <div class="note"><b>mu 和 z 不是一回事</b>（容易混）：<br>
+      <code>mu</code> = 分布的<b>中心</b>（靶心）；<code>std</code> = 宽度（抖动范围）；
+      <b><code>z</code> = 从这个分布里采样出的一个值</b>（实际射中的位置）：<br>
+      <code>z = mu + std × 随机噪声</code><br>
+      训练时 z 取自 posterior（用 <code>mu_q</code>），想象时取自 prior（用 <code>mu_p</code>）。</div>
+
+    <h3>公式在测什么：拆成两块</h3>
+    <table>
+      <tr><th>公式片段</th><th>测的是什么</th></tr>
+      <tr><td><code>(mu_q - mu_p)**2</code></td><td><b>位置差</b>：两个分布的中心差多远</td></tr>
+      <tr><td><code>lv_p - lv_q</code>（即 log 方差比）</td><td><b>宽度差</b>：一个比另一个"散"多少</td></tr>
+      <tr><td><code>/ lv_p.exp()</code></td><td>用 prior 的宽度做归一（以闭卷为基准衡量开卷）</td></tr>
+      <tr><td><code>- 1</code> 和 <code>0.5 *</code></td><td>数学常数：保证两个分布完全相同时 KL = 0</td></tr>
+    </table>
+
+    <h3>手算一个 2 维的例子（脚本 <code>demo_05b_kl.py</code> 可验证）</h3>
+    <table>
+      <tr><th>符号</th><th>维 0</th><th>维 1</th></tr>
+      <tr><td><code>mu_p</code>（闭卷中心）</td><td>1.0</td><td>−0.5</td></tr>
+      <tr><td><code>mu_q</code>（开卷中心）</td><td>1.2</td><td>−0.3</td></tr>
+      <tr><td><code>lv_p</code> → 方差</td><td>−2.0 → <b>0.1353</b></td><td>0.0 → <b>1.0</b></td></tr>
+      <tr><td><code>lv_q</code> → 方差</td><td>−1.5 → <b>0.2231</b></td><td>0.2 → <b>1.2214</b></td></tr>
+    </table>
+    <p>以维 0 为例，代入公式：</p>
+    <pre>0.5 × [ (−2.0−(−1.5)) + (0.2231 + (1.2−1.0)²) / 0.1353 − 1 ]
+  = 0.5 × [ −0.5 + 1.9443 − 1 ]
+  = 0.5 × 0.4443 = <b>0.2221</b></pre>
+    <p>维 1 同样算出 <b>0.0307</b>，两维相加 = <b>0.2528</b>。</p>
+    <div class="ok"><b>验证</b>：从 posterior 采 20 万个点、用 log q − log p 的平均来近似 KL，
+       得 0.2505 ≈ 0.2528 ✓ —— 公式没写错。
+       （也和 <code>torch.distributions.kl_divergence</code> 官方实现完全一致）</div>
 
     <p><b>先回顾这两个分布</b>（详见笔记 04）：</p>
     <table>
@@ -177,6 +219,40 @@ kl = torch.mean(kl)</pre>
       <tr><td>0.5</td><td><b>0.5000</b>（被顶到下限）</td></tr>
     </table>
     <p style="font-size:13px;color:#6b7c8d">KL 原始范围：0.1414 ~ 0.3840，均值 0.2384。</p>
+
+    <h3>free_bits 是怎么「修复」塌缩的：关键是梯度</h3>
+    <p>塌缩是一个<b>稳定的陷阱</b>：模型发现「不用 z」总 loss 最低；
+       想重新用 z 就得让 KL 涨回来，而 KL 一涨 loss 就被惩罚。<br>
+       —— 压小 KL 永远有奖励，用回 z 只有惩罚，所以塌了就再也回不来。</p>
+    <p><code>clamp</code> 改掉了这个激励结构：</p>
+    <table>
+      <tr><th>KL 的位置</th><th>loss 里的 KL 项</th><th>梯度</th></tr>
+      <tr><td>KL &gt; free_bits</td><td>正常</td><td>有（鼓励压小 KL）</td></tr>
+      <tr><td><b>KL ≤ free_bits</b></td><td><b>恒等于 free_bits（常数）</b></td><td><b>0 —— 压小 KL 没有任何收益</b></td></tr>
+    </table>
+    <div class="key">也就是说：从 0 爬到 free_bits 这段，<b>KL 是免费的</b> ——
+      这就是名字 <b>free bits（免费的比特）</b>的由来：每个维度的 z 前 0.1 nat 信息不收税。</div>
+    <p><b>数字例子</b>（用我们的实测）：</p>
+    <table>
+      <tr><th></th><th>无 free_bits</th><th>有 free_bits = 0.1</th></tr>
+      <tr><td>塌缩时的 KL 项</td><td>≈ 0</td><td>clamp 后 = 0.1</td></tr>
+      <tr><td>想重新用 z</td><td>KL 涨回 0.1 → loss <b>+0.1</b> 惩罚</td><td>爬升段 KL 项恒为 0.1，<b>零代价</b></td></tr>
+      <tr><td>结果</td><td>塌缩稳如泰山</td><td>用 z 只要能降重建 loss，总 loss 就降 → 被引导回「用 z」</td></tr>
+    </table>
+    <div class="note"><b>诚实的边界</b>：free_bits 只保证「z 被使用」（KL 不塌到 0），
+       不保证 z 学到的信息<b>有用</b>（比如和遮挡相关）。<br>
+       完整修复还要配合<b>加强数据随机化</b>——让"光靠记忆 h"不够用，z 才有活干。</div>
+
+    <h3>KL 多小才算训练好？—— 不是越小越好</h3>
+    <table>
+      <tr><th>KL 很小，可能是</th><th>含义</th><th>好坏</th></tr>
+      <tr><td>prior 学会了从记忆预测 posterior，<b>且 posterior 携带图像信息</b></td><td>闭卷能力追上开卷</td><td>✅ 成功</td></tr>
+      <tr><td>posterior 自己也没信息（z 死了），prior 天然等于它</td><td>两者都是空壳</td><td>❌ 塌缩</td></tr>
+    </table>
+    <div class="warn">我们 20 epoch 实测属于<b>坏的那种</b>：KL 塌到 0.000002，
+       z 里几乎没有信息 —— 因为确定性仿真光靠 h（记忆）就能预测一切，z 被绕过了。</div>
+    <div class="key">正确的目标：<b>KL 别太大（prior 跟得上），也别太小（z 有信息量）</b>。<br>
+       判断办法：遮挡画面时，z 还能不能帮忙补信息。</div>
   </section>
 
   <!-- 5 -->
@@ -204,8 +280,73 @@ kl = torch.mean(kl)</pre>
       <li><b>KL 是"想象力"的来源</b>：没有它，prior 学不会，模型就没法做梦</li>
     </ul>
     <p style="margin-top:16px">自己跑：<code>python prism/docs/demo_05_loss.py</code></p>
-    <div class="note"><b>下一小点（笔记 06）</b>：给 RSSM 补上 <code>imagine()</code> ——
-      用 prior 一路往前推，让模型真正会"做梦"，并用它跑 MPC。</div>
+    <div class="note"><b>后续</b>：<code>imagine()</code> 已实现（笔记 07 是长程漂移排查）；
+      MPC 见 <code>prism/tools/mpc_demo.py</code>。</div>
+  </section>
+
+  <!-- 7 -->
+  <section>
+    <h2><span class="num">7</span>out 与 rssm_loss：精确理解（含勘误）</h2>
+
+    <h3>常见理解（这一部分是对的）</h3>
+    <ul>
+      <li>每个 batch 调用一次 <code>rssm_loss</code></li>
+      <li>它吃的是整个 batch 的结果（32 步 × 16 条 = <b>512 个时间步</b>）</li>
+      <li>每类误差各自求 mean → 得到 <b>5 个量的字典</b>（<code>loss / recon / emb / proprio / kl</code>）</li>
+      <li>各项含义：
+        <ul>
+          <li><code>loss</code> = 四项的<b>加权求和</b></li>
+          <li><code>recon</code> = 每一步<b>重建图 vs 真实图</b>的 MSE</li>
+          <li><code>emb</code> = 每一步<b>预测摘要 vs 真实摘要</b>的 MSE</li>
+          <li><code>proprio</code> = 每一步<b>预测本体 vs 真实本体</b>的 MSE</li>
+          <li><code>kl</code> = 每一步 <b>posterior vs prior</b> 的 KL</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3>需要修正的三处</h3>
+    <table>
+      <tr><th>常见说法</th><th>修正</th></tr>
+      <tr>
+        <td>“out 里记录了每一步的中间量 <code>z</code>、<code>h</code>”</td>
+        <td><b>out 里没有 h 和 z</b>。它们在循环里算过，但<b>没导出</b>
+          （forward 只返回 emb / emb_pred / proprio_pred / kl / recon）。
+          这也是 <code>state</code> 参数“能进不能出”的原因。</td>
+      </tr>
+      <tr>
+        <td>“out 里还有四项 loss”</td>
+        <td><b>out 里只有 kl 是 loss 分量</b>；out 装的是<b>预测产物</b>
+          （emb_pred / proprio_pred / recon）。真正的 recon / emb / proprio 三项 loss
+          是在 <code>rssm_loss</code> 里<b>拿 out 和真实数据现算</b>的。</td>
+      </tr>
+      <tr>
+        <td>“每一步的参数”</td>
+        <td>模型参数（385 万）<b>只有一份、共享</b>，不随时间步变化，也不存进 out。
+          out 里存的是每步的<b>激活值</b>（预测结果），不是参数。</td>
+      </tr>
+    </table>
+
+    <h3>精确版：out 里到底有什么</h3>
+    <table>
+      <tr><th>键</th><th>形状</th><th>是什么</th></tr>
+      <tr><td><code>emb</code></td><td>(32, 16, 256)</td><td>Encoder 对<b>真实图</b>的摘要</td></tr>
+      <tr><td><code>emb_pred</code></td><td>(32, 16, 256)</td><td>模型<b>预测</b>的摘要</td></tr>
+      <tr><td><code>proprio_pred</code></td><td>(32, 16, 10)</td><td>预测的本体</td></tr>
+      <tr><td><code>kl</code></td><td>(32, 16)</td><td>每步 KL（已对 32 维求和）</td></tr>
+      <tr><td><code>recon</code></td><td>(32, 16, 3, 64, 64)</td><td>解码出的重建图</td></tr>
+    </table>
+
+    <h3>rssm_loss 里怎么算</h3>
+    <pre>recon    = torch.mean((out['recon'] - images) ** 2)                    # 现算
+emb_mse  = torch.mean((out['emb_pred'] - out['emb'].detach()) ** 2)     # 现算（注意 detach）
+proprio   = torch.mean((out['proprio_pred'] - proprio) ** 2)            # 现算
+kl       = torch.mean(out['kl'])                                        # 只做 mean
+total = recon + emb + proprio + kl      （各自乘权重后求和 → loss）</pre>
+    <div class="key"><b>规模</b>：512 个时间步 × 4 类误差 → 每类各自 mean → <b>4 个标量</b>，
+      再加上加权和 <code>loss</code> = 字典共 <b>5 个量</b>。</div>
+
+    <div class="warn"><b>一个容易漏的细节</b>：<code>emb</code> 那项用了 <code>.detach()</code>——
+      把真实摘要从计算图断开，<b>梯度只更新 obs_pred，不回传 Encoder</b>（防止表征坍塌，见第 3 节）。</div>
   </section>
 
 </div>

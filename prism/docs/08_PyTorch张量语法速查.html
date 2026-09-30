@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · PyTorch 张量语法速查（切片 / squeeze / permute / contiguous）</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#fff; --ink:#22303f; --muted:#6b7c8d;
+    --line:#e4e9ef; --r:#e74c3c; --g:#27ae60; --b:#3498db;
+    --hl:#f5b041; --pp:#8e44ad; --accent:#2d7ff9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.75}
+  .wrap{max-width:1060px;margin:0 auto;padding:34px 20px 90px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 26px;margin-bottom:20px}
+  h2{font-size:19px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{display:inline-block;min-width:27px;height:27px;line-height:27px;text-align:center;
+          background:var(--accent);color:#fff;border-radius:8px;font-size:14px;margin-right:9px}
+  h3{font-size:15px;margin:20px 0 8px;color:#34495e}
+  p{color:#3c4c5c;margin:10px 0}
+  .note{background:#eef6ff;border-left:4px solid var(--accent);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .key{background:#fff8e6;border-left:4px solid var(--hl);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .warn{background:#fdecea;border-left:4px solid var(--r);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .ok{background:#eafaf1;border-left:4px solid var(--g);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .cap{text-align:center;color:var(--muted);font-size:13px;margin-top:10px}
+  table{border-collapse:collapse;margin:12px auto;font-size:14px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 13px;text-align:left;vertical-align:top}
+  th{background:#f4f6f8;color:#34495e}
+  code{background:#f4f6f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  pre{background:#f4f6f8;padding:12px 16px;border-radius:8px;overflow-x:auto;
+      font-family:Consolas,monospace;font-size:13px;line-height:1.6;color:#2c3e50}
+  ul,ol{padding-left:22px;font-size:14px}
+  li{margin:6px 0}
+  svg{display:block;margin:0 auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>PyTorch 张量语法速查</h1>
+  <p class="sub">PRISM-WM 笔记 08 · 切片 / unsqueeze / squeeze / permute / contiguous —— 都在我们的代码里出现过</p>
+
+  <!-- 0 -->
+  <section>
+    <h2><span class="num">0</span>为什么需要这篇</h2>
+    <p>RSSM 处理的是 <b>5 维数据</b> <code>(T, B, C, H, W)</code>，而数据在磁盘上是 <code>(T, H, W, C)</code>，
+       DataLoader 打包成 <code>(B, T, C, H, W)</code>——中间全靠这几个操作倒腾维度。</p>
+    <div class="key">它们不改变<b>数据内容</b>，只改变<b>“怎么看这些数字”</b>（形状、顺序、内存排布）。</div>
+  </section>
+
+  <!-- 1 切片 -->
+  <section>
+    <h2><span class="num">1</span>切片 <code>[2:]</code> / <code>[:2]</code>：取一部分</h2>
+    <p>语法 <code>[start : stop : step]</code>，<b>start 包含、stop 不包含</b>，省略就取到头/尾。</p>
+
+    <div id="slice"></div>
+    <div class="cap">以 <code>a = [10, 20, 30, 40, 50]</code> 为例（高亮 = 取到的元素）</div>
+
+    <table>
+      <tr><th>写法</th><th>结果</th><th>含义</th></tr>
+      <tr><td><code>a[2:]</code></td><td><code>[30, 40, 50]</code></td><td>从索引 2 到末尾</td></tr>
+      <tr><td><code>a[:2]</code></td><td><code>[10, 20]</code></td><td>开头到索引 2（不含）</td></tr>
+      <tr><td><code>a[1:4]</code></td><td><code>[20, 30, 40]</code></td><td>索引 1、2、3</td></tr>
+      <tr><td><code>a[::2]</code></td><td><code>[10, 30, 50]</code></td><td>每隔一个（步长 2）</td></tr>
+      <tr><td><code>a[:-1]</code></td><td><code>[10, 20, 30, 40]</code></td><td>去掉最后一个</td></tr>
+      <tr><td><code>a[-2:]</code></td><td><code>[40, 50]</code></td><td>最后两个</td></tr>
+    </table>
+
+    <h3>在项目里的用法</h3>
+    <pre>images.shape          # (32, 16, 3, 64, 64)  即 (T, B, C, H, W)
+images.shape[2:]      # (3, 64, 64)            ← 掐掉前两个（T、B），留下通道+分辨率
+
+images.reshape(T * B, *images.shape[2:])   # → (512, 3, 64, 64)</pre>
+    <div class="note">好处：<b>不硬编码尺寸</b>。换成 128×128 时 <code>shape[2:]</code> 自动变成 <code>(3,128,128)</code>，这行代码不用改。
+       （<code>*</code> 是解包，把 <code>(3,64,64)</code> 拆成三个独立参数传给 reshape）</div>
+  </section>
+
+  <!-- 2 unsqueeze / squeeze -->
+  <section>
+    <h2><span class="num">2</span>unsqueeze / squeeze：加 / 删一个维度</h2>
+    <p>深度学习里最常见的需求：<b>单张图要凑成“一批”</b>才能喂给模型。</p>
+
+    <div id="sq"></div>
+    <div class="cap">unsqueeze 加一个大小为 1 的维度；squeeze 删掉所有（或指定）大小为 1 的维度</div>
+
+    <table>
+      <tr><th>操作</th><th>输入</th><th>输出</th><th>用途</th></tr>
+      <tr><td><code>x.unsqueeze(0)</code></td><td>(3, 64, 64)</td><td>(1, 3, 64, 64)</td><td>单张图 → 一批（第 0 维加 batch）</td></tr>
+      <tr><td><code>x.unsqueeze(1)</code></td><td>(32, 3, 64, 64)</td><td>(32, 1, 3, 64, 64)</td><td>加序列维（MPC 里把 32 帧当 1 条序列）</td></tr>
+      <tr><td><code>x.squeeze()</code></td><td>(1, 3, 64, 64)</td><td>(3, 64, 64)</td><td>去掉多余的 batch 维</td></tr>
+      <tr><td><code>x.squeeze(0)</code></td><td>(1, 3, 64, 64)</td><td>(3, 64, 64)</td><td>只删第 0 维</td></tr>
+    </table>
+
+    <h3>在项目里的用法</h3>
+    <pre># dataset 取出的单样本是 (32,3,64,64)，要变成模型要的 (32,1,3,64,64)
+images = s['images'].unsqueeze(1)      # 在第 1 维加 B=1
+
+# MPC 里把本体变成 (1,10) 才能送进 imagine
+prop = torch.from_numpy(prop).float().unsqueeze(0)</pre>
+    <div class="warn">注意：<code>squeeze()</code> 不带参数会删掉<b>所有</b>大小为 1 的维度——如果 batch 恰好是 1，会误删！
+      需要精确控制时用 <code>squeeze(dim)</code>。</div>
+  </section>
+
+  <!-- 3 permute -->
+  <section>
+    <h2><span class="num">3</span>permute：重排维度顺序</h2>
+    <p>直接把维度的<b>先后顺序</b>换掉（和转置 transpose 类似，但可一次换多个轴）。</p>
+
+    <div id="pm"></div>
+    <div class="cap">DataLoader 给的是 (B, T, ...)，RSSM 要 (T, B, ...) —— 用 permute(1, 0, 2, 3, 4) 把前两维对调</div>
+
+    <h3>在项目里的用法（核心）</h3>
+    <pre># train_rssm.py 的 to_seq_batch()
+images  = batch['images'].to(device).permute(1, 0, 2, 3, 4).contiguous()
+#        输入 (B, T, 3, 64, 64)
+#        输出 (T, B, 3, 64, 64)</pre>
+    <div class="key"><b>为什么要转成 T 在前？</b><br>
+       因为主循环是 <code>for t in range(T)</code>：这样 <code>images[t]</code> 一次就拿到
+       <b>所有 B 条序列在当前帧的画面</b>（形状 (B,3,64,64)），既方便又高效。<br>
+       如果保持 (B,T,...)，就得写 <code>images[:, t]</code>，且在内存上是跨步访问，更慢。</div>
+
+    <h3>另一个常见用法：HWC → CHW</h3>
+    <pre># 磁盘上是 (H, W, C)，PyTorch 要 (C, H, W)
+x = torch.from_numpy(img).float().permute(2, 0, 1)   # (64,64,3) → (3,64,64)</pre>
+  </section>
+
+  <!-- 4 contiguous -->
+  <section>
+    <h2><span class="num">4</span>contiguous：让内存重新排布成连续</h2>
+    <p><code>permute</code> 只改“看法”（元数据），<b>不动内存</b>——导致逻辑上相邻的元素在内存里是跳着放的。</p>
+
+    <div id="ct"></div>
+    <div class="cap">permute 后逻辑视图变了但内存没动；contiguous 会<b>真的拷贝一份</b>按新顺序排好</div>
+
+    <table>
+      <tr><th></th><th>permute 后</th><th>.contiguous() 后</th></tr>
+      <tr><td>内存</td><td>没变（还是原顺序）</td><td><b>重新排布</b>（拷贝一份）</td></tr>
+      <tr><td>访问</td><td>跳跃访问（慢）</td><td>连续访问（快）</td></tr>
+      <tr><td>能否 reshape/view</td><td>❌ 常报错</td><td>✅ 可以</td></tr>
+    </table>
+
+    <div class="warn"><b>经典报错</b>：
+      <code>RuntimeError: view size is not compatible with input tensor's ... call .contiguous() before .view()</code><br>
+      原因就是 permute/transpose 后内存不连续，而 <code>view()</code> 要求连续——补一个 <code>.contiguous()</code> 即可。
+      （<code>reshape()</code> 比较智能，内部会自动拷贝，但显式写 contiguous 更清楚）</div>
+
+    <div class="note">代价：<code>contiguous()</code> 会<b>拷贝数据</b>（费时费内存）。
+      所以只在需要时调用（比如 permute 之后紧接着 reshape / view）。</div>
+  </section>
+
+  <!-- 5 组合拳 -->
+  <section>
+    <h2><span class="num">5</span>项目里的“组合拳”：数据怎么变形的</h2>
+    <div id="flow"></div>
+    <div class="cap">从磁盘到模型输入的完整变形过程</div>
+
+    <table>
+      <tr><th>阶段</th><th>形状</th><th>用的操作</th></tr>
+      <tr><td>磁盘 npz</td><td>(100, 64, 64, 3)</td><td>—（HWC）</td></tr>
+      <tr><td>Dataset 取样本</td><td>(32, 3, 64, 64)</td><td><code>permute(0,3,1,2)</code> + 切片 <code>[s:s+32]</code></td></tr>
+      <tr><td>DataLoader 打包</td><td>(B, 32, 3, 64, 64)</td><td>自动 stack</td></tr>
+      <tr><td><b>to_seq_batch</b></td><td>(32, B, 3, 64, 64)</td><td><code>permute(1,0,2,3,4).contiguous()</code></td></tr>
+      <tr><td><b>Encoder 前</b></td><td>(32×B, 3, 64, 64)</td><td><code>reshape(T*B, *shape[2:])</code></td></tr>
+      <tr><td>Encoder 后</td><td>(32, B, 256)</td><td><code>reshape(T, B, -1)</code></td></tr>
+    </table>
+  </section>
+
+  <!-- 6 速查 -->
+  <section>
+    <h2><span class="num">6</span>速查表</h2>
+    <table>
+      <tr><th>操作</th><th>作用</th><th>是否拷贝数据</th></tr>
+      <tr><td><code>a[2:]</code></td><td>取切片</td><td>否（视图）</td></tr>
+      <tr><td><code>unsqueeze(dim)</code></td><td>加一个大小为 1 的维度</td><td>否</td></tr>
+      <tr><td><code>squeeze(dim)</code></td><td>删大小为 1 的维度</td><td>否</td></tr>
+      <tr><td><code>permute(...)</code></td><td>重排维度顺序</td><td>否（只改元数据）</td></tr>
+      <tr><td><code>contiguous()</code></td><td>让内存连续</td><td><b>是</b>（必要时才用）</td></tr>
+      <tr><td><code>reshape(...)</code></td><td>改形状（自动处理连续性）</td><td>必要时</td></tr>
+      <tr><td><code>view(...)</code></td><td>改形状（要求连续）</td><td>否</td></tr>
+    </table>
+  </section>
+
+</div>
+
+<script>
+/* ============ 切片示意 ============ */
+(function(){
+  const vals = [10, 20, 30, 40, 50];
+  const cases = [
+    ['a[2:]',  [0,0,1,1,1], [30,40,50]],
+    ['a[:2]',  [1,1,0,0,0], [10,20]],
+    ['a[1:4]', [0,1,1,1,0], [20,30,40]],
+    ['a[::2]', [1,0,1,0,1], [10,30,50]],
+    ['a[:-1]', [1,1,1,1,0], [10,20,30,40]],
+  ];
+  const cw = 62, ch = 40, gap = 8;
+  const rows = cases.length + 1;
+  const W = 40 + 5 * cw + 4 * gap + 190, H = 30 + rows * (ch + 10) + 20;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px">`;
+
+  // 表头：索引
+  s += `<text x="34" y="24" font-size="11" fill="#6b7c8d">索引</text>`;
+  for (let i = 0; i < 5; ++i) {
+    const x = 40 + i * (cw + gap);
+    s += `<text x="${x + cw/2}" y="24" text-anchor="middle" font-size="11" fill="#6b7c8d">${i}</text>`;
+  }
+  // 原始行
+  let y = 30;
+  s += `<text x="34" y="${y + ch/2 + 4}" font-size="12" fill="#34495e">a =</text>`;
+  for (let i = 0; i < 5; ++i) {
+    const x = 40 + i * (cw + gap);
+    s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" rx="5" fill="#fff" stroke="#cfd8e3"/>`;
+    s += `<text x="${x + cw/2}" y="${y + ch/2 + 5}" text-anchor="middle" font-size="13" fill="#22303f">${vals[i]}</text>`;
+  }
+  y += ch + 10;
+  // 各切片
+  cases.forEach(([expr, mask, out]) => {
+    s += `<text x="34" y="${y + ch/2 + 4}" font-size="12" font-family="Consolas,monospace" fill="#2d7ff9">${expr}</text>`;
+    for (let i = 0; i < 5; ++i) {
+      const x = 40 + i * (cw + gap);
+      const on = mask[i];
+      s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" rx="5" fill="${on ? '#ffeaa7' : '#f4f6f8'}" stroke="${on ? '#f5b041' : '#e4e9ef'}"/>`;
+      s += `<text x="${x + cw/2}" y="${y + ch/2 + 5}" text-anchor="middle" font-size="13" fill="${on ? '#22303f' : '#bcc4cd'}">${vals[i]}</text>`;
+    }
+    s += `<text x="${40 + 5*(cw+gap) + 12}" y="${y + ch/2 + 5}" font-size="12" font-family="Consolas,monospace" fill="#27ae60">→ [${out.join(', ')}]</text>`;
+    y += ch + 10;
+  });
+  s += `</svg>`;
+  document.getElementById('slice').innerHTML = s;
+})();
+
+/* ============ unsqueeze / squeeze ============ */
+(function(){
+  const W = 880, H = 210;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:880px">`;
+  s += `<defs><marker id="as" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+
+  // 左：单张图 (3,64,64) —— 画成三层（通道）
+  s += `<text x="110" y="26" text-anchor="middle" font-size="13" fill="#34495e">单张图 (3, 64, 64)</text>`;
+  for (let i = 0; i < 3; ++i) {
+    s += `<rect x="${40 + i*10}" y="${40 + i*10}" width="150" height="95" rx="4"
+           fill="#fff" stroke="#3498db" stroke-width="2"/>`;
+  }
+  s += `<text x="125" y="165" text-anchor="middle" font-size="12" fill="#6b7c8d">3 个通道叠在一起</text>`;
+
+  // 箭头
+  s += `<line x1="215" y1="90" x2="300" y2="90" stroke="#7f8c8d" stroke-width="2" marker-end="url(#as)"/>`;
+  s += `<text x="258" y="78" text-anchor="middle" font-size="12" fill="#2d7ff9">unsqueeze(0)</text>`;
+  s += `<text x="258" y="108" text-anchor="middle" font-size="11" fill="#6b7c8d">加 batch 维</text>`;
+
+  // 右：一批 (1,3,64,64) —— 外面套一个大框（batch）
+  s += `<text x="480" y="26" text-anchor="middle" font-size="13" fill="#34495e">一批图 (1, 3, 64, 64)</text>`;
+  s += `<rect x="330" y="36" width="200" height="115" rx="6" fill="none" stroke="#e74c3c" stroke-width="2" stroke-dasharray="6,4"/>`;
+  s += `<text x="340" y="52" font-size="11" fill="#e74c3c">batch 维（新加的，大小=1）</text>`;
+  for (let i = 0; i < 3; ++i) {
+    s += `<rect x="${355 + i*10}" y="${60 + i*10}" width="110" height="70" rx="4"
+           fill="#fff" stroke="#3498db" stroke-width="2"/>`;
+  }
+  s += `<text x="430" y="170" text-anchor="middle" font-size="12" fill="#6b7c8d">外面套一层“批”盒子</text>`;
+
+  // 反向
+  s += `<line x1="500" y1="200" x2="620" y2="200" stroke="#7f8c8d" stroke-width="2" marker-end="url(#as)"/>`;
+  s += `<text x="560" y="190" text-anchor="middle" font-size="12" fill="#27ae60">squeeze(0) 删掉它</text>`;
+
+  s += `</svg>`;
+  document.getElementById('sq').innerHTML = s;
+})();
+
+/* ============ permute ============ */
+(function(){
+  const W = 880, H = 190;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:880px">`;
+  s += `<defs><marker id="ap" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+
+  const dims = ['B', 'T', 'C', 'H', 'W'];
+  const colors = ['#e74c3c', '#3498db', '#27ae60', '#f5b041', '#8e44ad'];
+
+  // 左：原始 (B,T,C,H,W)
+  s += `<text x="175" y="30" text-anchor="middle" font-size="13" fill="#34495e">DataLoader 给的形状</text>`;
+  dims.forEach((d, i) => {
+    const x = 40 + i * 68;
+    s += `<rect x="${x}" y="45" width="60" height="52" rx="6" fill="${colors[i]}" opacity="0.85"/>`;
+    s += `<text x="${x + 30}" y="${45 + 34}" text-anchor="middle" font-size="17" font-weight="bold" fill="#fff">${d}</text>`;
+    s += `<text x="${x + 30}" y="${45 + 70}" text-anchor="middle" font-size="11" fill="#6b7c8d">dim ${i}</text>`;
+  });
+  s += `<text x="175" y="135" text-anchor="middle" font-size="13" font-family="Consolas,monospace" fill="#22303f">(B, T, C, H, W)</text>`;
+
+  // 箭头 + 说明
+  s += `<line x1="385" y1="70" x2="470" y2="70" stroke="#7f8c8d" stroke-width="2" marker-end="url(#ap)"/>`;
+  s += `<text x="428" y="58" text-anchor="middle" font-size="12" fill="#2d7ff9">permute(1,0,2,3,4)</text>`;
+  s += `<text x="428" y="100" text-anchor="middle" font-size="11" fill="#6b7c8d">把 dim0 和 dim1 对调</text>`;
+
+  // 右：结果 (T,B,C,H,W)
+  const perm = [1, 0, 2, 3, 4];
+  s += `<text x="690" y="30" text-anchor="middle" font-size="13" fill="#34495e">RSSM 要的形状</text>`;
+  perm.forEach((src, i) => {
+    const x = 555 + i * 68;
+    s += `<rect x="${x}" y="45" width="60" height="52" rx="6" fill="${colors[src]}" opacity="0.85"/>`;
+    s += `<text x="${x + 30}" y="${45 + 34}" text-anchor="middle" font-size="17" font-weight="bold" fill="#fff">${dims[src]}</text>`;
+    s += `<text x="${x + 30}" y="${45 + 70}" text-anchor="middle" font-size="11" fill="#6b7c8d">dim ${i}</text>`;
+  });
+  s += `<text x="690" y="135" text-anchor="middle" font-size="13" font-family="Consolas,monospace" fill="#22303f">(T, B, C, H, W)</text>`;
+
+  // 高亮交换的两块
+  s += `<text x="440" y="170" text-anchor="middle" font-size="12" fill="#6b7c8d">↑ 只有前两块（B 和 T）换了位置，后面 C/H/W 没动</text>`;
+
+  s += `</svg>`;
+  document.getElementById('pm').innerHTML = s;
+})();
+
+/* ============ contiguous ============ */
+(function(){
+  const W = 880, H = 320;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:880px">`;
+  s += `<defs><marker id="ac2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+
+  const cw = 76, ch = 44;
+  const labels = ['a','b','c','d','e','f','g','h'];
+  const cells = labels.length;
+
+  // ① 原始内存
+  s += `<text x="20" y="22" font-size="13" fill="#34495e">① 原始张量（内存里这样排）</text>`;
+  for (let i = 0; i < cells; ++i) {
+    const x = 20 + i * (cw + 4);
+    s += `<rect x="${x}" y="32" width="${cw}" height="${ch}" rx="4" fill="#fff" stroke="#cfd8e3"/>`;
+    s += `<text x="${x + cw/2}" y="${32 + ch/2 + 5}" text-anchor="middle" font-size="14" fill="#22303f">${labels[i]}</text>`;
+  }
+
+  // ② permute 后：逻辑变了，内存没变（跳跃读取）
+  s += `<text x="20" y="108" font-size="13" fill="#34495e">② permute 后：逻辑顺序变了，但内存没动</text>`;
+  const order = [0, 4, 1, 5, 2, 6, 3, 7];   // 新的逻辑读取顺序（跳跃）
+  for (let i = 0; i < cells; ++i) {
+    const x = 20 + i * (cw + 4);
+    s += `<rect x="${x}" y="118" width="${cw}" height="${ch}" rx="4" fill="#f4f6f8" stroke="#cfd8e3"/>`;
+    s += `<text x="${x + cw/2}" y="${118 + ch/2 + 5}" text-anchor="middle" font-size="14" fill="#22303f">${labels[i]}</text>`;
+  }
+  // 跳跃箭头（从逻辑顺序指向内存实际位置）
+  order.forEach((memIdx, logicIdx) => {
+    if (logicIdx >= cells - 1) return;
+    const x1 = 20 + logicIdx * (cw + 4) + cw / 2;
+    const x2 = 20 + order[logicIdx + 1] * (cw + 4) + cw / 2;
+    s += `<path d="M ${x1} ${118 + ch + 6} Q ${(x1 + x2) / 2} ${118 + ch + 40} ${x2} ${118 + ch + 6}"
+           fill="none" stroke="#e74c3c" stroke-width="1.6" stroke-dasharray="4,3" opacity="0.8"/>`;
+  });
+  s += `<text x="440" y="212" text-anchor="middle" font-size="12" fill="#e74c3c">读取时跳来跳去（不连续 → 慢，且不能 view）</text>`;
+
+  // ③ contiguous 后：真的拷贝并按新顺序排好
+  s += `<text x="20" y="242" font-size="13" fill="#34495e">③ .contiguous()：真的拷贝一份，按新顺序紧密排好</text>`;
+  for (let i = 0; i < cells; ++i) {
+    const x = 20 + i * (cw + 4);
+    const ch2 = labels[order[i]];
+    s += `<rect x="${x}" y="252" width="${cw}" height="${ch}" rx="4" fill="#eafaf1" stroke="#27ae60"/>`;
+    s += `<text x="${x + cw/2}" y="${252 + ch/2 + 5}" text-anchor="middle" font-size="14" fill="#1e8449">${ch2}</text>`;
+  }
+  s += `<text x="440" y="312" text-anchor="middle" font-size="12" fill="#27ae60">连续存放 → 快，且可以 reshape / view</text>`;
+
+  s += `</svg>`;
+  document.getElementById('ct').innerHTML = s;
+})();
+
+/* ============ 变形流程 ============ */
+(function(){
+  const W = 900, H = 260;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:900px">`;
+  s += `<defs><marker id="af" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+
+  const steps = [
+    ['磁盘 npz', '(100,64,64,3)', 'HWC', '#95a5a6'],
+    ['Dataset', '(32,3,64,64)', '切片+permute', '#3498db'],
+    ['DataLoader', '(B,32,3,64,64)', '打包', '#3498db'],
+    ['to_seq_batch', '(32,B,3,64,64)', 'permute+contig', '#f5b041'],
+    ['Encoder 前', '(32·B,3,64,64)', 'reshape', '#e67e22'],
+    ['Encoder 后', '(32,B,256)', 'reshape', '#27ae60'],
+  ];
+  const bw = 138, gap = 8;
+  let x = 8;
+  steps.forEach((st, i) => {
+    s += `<rect x="${x}" y="60" width="${bw}" height="90" rx="8" fill="#fff" stroke="${st[3]}" stroke-width="2"/>`;
+    s += `<text x="${x + bw/2}" y="86" text-anchor="middle" font-size="13" font-weight="bold" fill="#22303f">${st[0]}</text>`;
+    s += `<text x="${x + bw/2}" y="108" text-anchor="middle" font-size="12" font-family="Consolas,monospace" fill="#34495e">${st[1]}</text>`;
+    s += `<text x="${x + bw/2}" y="130" text-anchor="middle" font-size="11" fill="#6b7c8d">${st[2]}</text>`;
+    if (i < steps.length - 1) {
+      s += `<line x1="${x + bw}" y1="105" x2="${x + bw + gap}" y2="105" stroke="#7f8c8d" stroke-width="2" marker-end="url(#af)"/>`;
+    }
+    x += bw + gap;
+  });
+  s += `<text x="${W/2}" y="34" text-anchor="middle" font-size="13" fill="#34495e">一次前向里，数据的形状变化</text>`;
+  s += `<text x="${W/2}" y="196" text-anchor="middle" font-size="12" fill="#6b7c8d">内容始终没变，只是“怎么看这些数字”在变</text>`;
+  s += `</svg>`;
+  document.getElementById('flow').innerHTML = s;
+})();
+</script>
+</body>
+</html>

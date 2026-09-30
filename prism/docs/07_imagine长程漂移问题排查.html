@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · imagine() 长程漂移问题排查</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#fff; --ink:#22303f; --muted:#6b7c8d;
+    --line:#e4e9ef; --r:#e74c3c; --g:#27ae60; --b:#3498db;
+    --hl:#f5b041; --pp:#8e44ad; --accent:#2d7ff9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.75}
+  .wrap{max-width:1060px;margin:0 auto;padding:34px 20px 90px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 26px;margin-bottom:20px}
+  h2{font-size:19px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{display:inline-block;min-width:27px;height:27px;line-height:27px;text-align:center;
+          background:var(--accent);color:#fff;border-radius:8px;font-size:14px;margin-right:9px}
+  h3{font-size:15px;margin:20px 0 8px;color:#34495e}
+  p{color:#3c4c5c;margin:10px 0}
+  .note{background:#eef6ff;border-left:4px solid var(--accent);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .key{background:#fff8e6;border-left:4px solid var(--hl);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .warn{background:#fdecea;border-left:4px solid var(--r);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .ok{background:#eafaf1;border-left:4px solid var(--g);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .cap{text-align:center;color:var(--muted);font-size:13px;margin-top:10px}
+  table{border-collapse:collapse;margin:12px auto;font-size:14px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 13px;text-align:left;vertical-align:top}
+  th{background:#f4f6f8;color:#34495e}
+  code{background:#f4f6f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  pre{background:#f4f6f8;padding:12px 16px;border-radius:8px;overflow-x:auto;
+      font-family:Consolas,monospace;font-size:13px;line-height:1.6;color:#2c3e50}
+  ul,ol{padding-left:22px;font-size:14px}
+  li{margin:6px 0}
+  img{max-width:100%;border:1px solid var(--line);border-radius:10px;display:block;margin:14px auto}
+  svg{display:block;margin:0 auto}
+  .fig{text-align:center;margin:16px 0}
+  .fig img{margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>imagine() 长程漂移问题排查</h1>
+  <p class="sub">PRISM-WM 笔记 07 · 现象 → 数据 → 排查 → 根因 → 解决方案</p>
+
+  <!-- 0 -->
+  <section>
+    <h2><span class="num">0</span>一句话</h2>
+    <p>模型在<b>短期（前 6 步）想象非常准</b>，但从第 6 步起误差指数增长、画面出现<b>像素级彩色噪点</b>，
+       12 步后画面完全破碎、误差超过"瞎猜"基线。</p>
+    <div class="warn">排查结果：<b>不是</b> prior 采样噪声导致的（已用实验否定）。
+       根因是 <code>emb_pred</code> 在推演中<b>系统性漂移</b>，漂出训练分布后 decoder 输出噪声。</div>
+  </section>
+
+  <!-- 1 -->
+  <section>
+    <h2><span class="num">1</span>现象：真实 vs 想象（三列对比）</h2>
+    <div class="fig">
+      <img src="../preview/imagine_real_vs_pred.png" alt="真实 vs 采样想象 vs 均值想象">
+      <div class="cap">每行：<b>左=真实</b>　<b>中=采样想象</b>　<b>右=均值想象（无采样噪声）</b>　step 0,3,6,9,12,15,18 从上到下</div>
+    </div>
+
+    <h3>逐段观察</h3>
+    <table>
+      <tr><th>行（step）</th><th>现象</th><th>判定</th></tr>
+      <tr><td><b>1（step 0）</b></td><td>想象帧与真实帧<b>几乎无法区分</b>：机械臂姿态、桌面、青色方块位置、红色目标球全对</td><td>✅ 极准</td></tr>
+      <tr><td><b>2（step 3）</b></td><td>仍然完整，仅有细微差异</td><td>✅ 好</td></tr>
+      <tr><td><b>3（step 6）</b></td><td><b>桌面的白色大立方体上开始出现噪点</b>（白色斑点），机械臂仍完整</td><td>⚠️ 开始坏</td></tr>
+      <tr><td><b>4（step 9）</b></td><td>桌面大面积噪点/破碎，机械臂轮廓开始碎裂</td><td>❌ 明显劣化</td></tr>
+      <tr><td><b>5–7（step 12+）</b></td><td>噪声扩散到全图，机械臂和桌面都碎成彩色像素块</td><td>❌ 失效</td></tr>
+    </table>
+
+    <div class="key"><b>关键线索</b>：噪声<b>从桌面（大面积均匀区域）开始</b>，而<b>绿色背景自始至终很稳</b>。
+       这说明问题不是"整体模糊"或"物体位移错误"，而是<b>decoder 对某些区域过度敏感</b>。</div>
+  </section>
+
+  <!-- 2 -->
+  <section>
+    <h2><span class="num">2</span>数据：rollout 误差曲线</h2>
+    <div id="curve"></div>
+    <div class="cap">横轴=想象步数，纵轴=像素 MSE（越低越好）。虚线为"全预测成均值"的基线</div>
+
+    <table>
+      <tr><th>step</th><th>sample（采样）</th><th>mu（均值，无噪声）</th><th>阶段</th></tr>
+      <tr><td>0–4</td><td>0.00049 ~ 0.00045</td><td>0.00043 ~ 0.00043</td><td>✅ 比基线好 <b>80 倍</b></td></tr>
+      <tr><td>6</td><td>0.00214</td><td>0.00213</td><td>⚠️ 开始上升</td></tr>
+      <tr><td>8</td><td>0.00896</td><td>0.00816</td><td>❌ 快速恶化</td></tr>
+      <tr><td>10</td><td>0.02933</td><td>0.02608</td><td>❌ 接近基线</td></tr>
+      <tr><td>12</td><td>0.05911</td><td>0.05629</td><td>❌ <b>超过基线</b></td></tr>
+      <tr><td>19</td><td>0.07990</td><td>0.07981</td><td>❌ 饱和在 ~0.08</td></tr>
+    </table>
+    <p style="font-size:13px;color:#6b7c8d">基线（全预测成均值）= 0.03848</p>
+  </section>
+
+  <!-- 3 -->
+  <section>
+    <h2><span class="num">3</span>初步排查（两个假设，一个实验）</h2>
+
+    <h3>假设 A：是 prior 采样的随机噪声导致的？</h3>
+    <p>推理链条：想象时 <code>z = mu + std × 随机噪声</code>，而训练时 z 来自 posterior（被重建 loss 锚定）。
+       decoder 可能<b>没见过"带采样噪声的 z"</b>，于是输出乱跳。</p>
+    <div class="note"><b>验证实验</b>：给 <code>imagine()</code> 加 <code>sample</code> 开关——
+       <code>sample=False</code> 时 z 直接用均值 <code>mu_p</code>（完全去掉随机性）。<br>
+       <b>若假设成立</b>：mu 模式应该明显更稳（误差更低、画面无噪点）。</div>
+
+    <h3>实验结果：假设 A 被否定</h3>
+    <table>
+      <tr><th>step</th><th>sample</th><th>mu</th><th>差异</th></tr>
+      <tr><td>9</td><td>0.01651</td><td>0.01452</td><td>mu 略好一点点</td></tr>
+      <tr><td>10</td><td>0.02933</td><td>0.02608</td><td>mu 略好一点点</td></tr>
+      <tr><td>12</td><td>0.05911</td><td>0.05629</td><td>几乎相同</td></tr>
+      <tr><td>19</td><td>0.07990</td><td>0.07981</td><td><b>几乎相同</b></td></tr>
+    </table>
+    <div class="warn">两条曲线<b>几乎重合</b>——去掉采样噪声后画面照样碎、误差照样涨。
+       所以<b>采样噪声不是主因</b>（只是让 mu 模式好那么一丁点）。</div>
+  </section>
+
+  <!-- 4 -->
+  <section>
+    <h2><span class="num">4</span>真正的根因：emb_pred 系统性漂移</h2>
+
+    <div id="chain"></div>
+    <div class="cap">误差累积链条</div>
+
+    <h3>链条解释</h3>
+    <ol>
+      <li><b>想象时没有观测修正</b>：训练时每步都有真实图像通过 posterior 把 z/h "拉回正轨"；
+          想象时只能靠 prior 自己推。</li>
+      <li><b>每步有微小预测偏差</b>：z/h 的推演不可能完美，偏差逐帧累积（自回归的固有问题）。</li>
+      <li><b><code>emb_pred</code> 漂出训练分布</b>：几步之后，模型预测出的画面摘要
+          已经不是它训练时见过的那些值。</li>
+      <li><b>decoder 对偏移的 emb 极度敏感</b>：decoder 只在"训练见过的窄区域"内可靠；
+          一旦输入偏移，输出就在见过的模式间<b>随机跳变</b> → 像素级彩色噪点。</li>
+    </ol>
+
+    <div class="key"><b>这解释了图上的两个细节</b>：<br>
+      ① <b>噪声从桌面开始</b> —— 桌面是大面积均匀区域，它的像素由 emb 的细微分量决定，
+         没有强特征锚定，emb 一漂就先乱；而机械臂有强结构特征，撑得更久（后来也碎了）。<br>
+      ② <b>绿色背景一直稳</b> —— 背景是恒定输入，decoder 记得最牢。</div>
+
+    <div class="warn">因为是<b>系统性漂移</b>而不是随机噪声，所以"去掉采样"没用——
+       这也正是实验结果（sample ≈ mu）给出的判断。</div>
+  </section>
+
+  <!-- 5 -->
+  <section>
+    <h2><span class="num">5</span>与之前问题的关联（同一个源头）</h2>
+    <table>
+      <tr><th>之前发现的问题</th><th>与本次的关联</th></tr>
+      <tr><td><b>KL 塌缩</b>（KL 从 0.17 降到 0.000002，z 几乎不承载信息）</td>
+          <td>z 信息量少 → decoder 只在极窄的 emb 区域可靠 → <b>对漂移极度敏感</b></td></tr>
+      <tr><td><b>数据运动信号弱</b>（相邻帧差异仅 0.0026，方块只有 2.5cm）</td>
+          <td>模型没见过"大幅变化"，没学会<b>纠错</b>，只能靠"背画面"→ 一漂就崩</td></tr>
+      <tr><td><b>数据几乎静止</b>（stall 终止让大量片段被砍）</td>
+          <td>缺少"世界保持不变"的强监督 → 模型推演时容易自己漂移</td></tr>
+    </table>
+    <div class="note">三者指向<b>同一个源头：数据 + KL 塌缩让模型没有学到鲁棒的动力学</b>，
+       只学到了"特定输入 → 特定画面"的窄映射。</div>
+  </section>
+
+  <!-- 6 -->
+  <section>
+    <h2><span class="num">6</span>解决方案</h2>
+    <table>
+      <tr><th>层级</th><th>方案</th><th>预期效果</th><th>成本</th></tr>
+      <tr><td><b>短期（立即可用）</b></td><td>MPC 只用前 <b>6 步</b>（误差 0.002，比基线好 20 倍）</td>
+          <td>够做决策，画面可信</td><td>0（改 horizon 参数）</td></tr>
+      <tr><td><b>根本（治本）</b></td>
+          <td>重采数据：加强 domain randomization + 让方块更大 + 增加"静止/运动"混合样本</td>
+          <td>模型学会纠错，漂移变慢</td><td>中（重采 + 重训）</td></tr>
+      <tr><td><b>结构</b></td><td>离散 latent（<b>DreamerV3 方案</b>）+ free_bits 重训</td>
+          <td>提高 z 信息容量，decoder 更鲁棒</td><td>高（改模型）</td></tr>
+    </table>
+    <div class="ok"><b>推荐顺序</b>：先用短期方案把 MPC 跑通（验证整条链路），
+       再做根本方案（数据），最后考虑离散 latent。</div>
+  </section>
+
+  <!-- 7 -->
+  <section>
+    <h2><span class="num">7</span>排查过程中的教训</h2>
+    <ul>
+      <li><b>不要凭猜测下结论</b>：我一开始判断是"采样噪声"，做实验后发现错了。
+          一个开关（<code>sample</code>）+ 一条对比曲线就能证伪，成本极低。</li>
+      <li><b>看图要细</b>："噪声从桌面开始、背景不坏"这个细节才是定位 decoder 敏感性的关键线索。</li>
+      <li><b>环境提示</b>：本次排查中命令行输出多次被污染（假 traceback、乱码），
+          所有结论都以<b>脚本落盘的文件（PNG / JSON）</b>为准。</li>
+    </ul>
+  </section>
+
+</div>
+
+<script>
+/* ============ 误差曲线（数据来自 prism/preview/imagine_curve.json） ============ */
+(function(){
+  const sample = [0.000494,0.000427,0.000437,0.000537,0.000450,0.000822,0.002138,0.004538,
+                  0.008957,0.016509,0.029333,0.044812,0.059115,0.067421,0.072518,0.074916,
+                  0.076443,0.078644,0.079242,0.079902];
+  const mu = [0.000427,0.000454,0.000441,0.000459,0.000431,0.000876,0.002126,0.004354,
+              0.008162,0.014525,0.026084,0.041584,0.056287,0.066238,0.071896,0.074884,
+              0.075983,0.077748,0.078922,0.079806];
+  const baseline = 0.03848;
+  const H = sample.length;
+
+  const W = 920, Hgt = 330;
+  const L = 70, R = 20, T = 30, B = 55;
+  const pw = W - L - R, ph = Hgt - T - B;
+  const ymax = 0.085;
+  const X = t => L + (t / (H - 1)) * pw;
+  const Y = v => T + ph - (v / ymax) * ph;
+
+  let s = `<svg viewBox="0 0 ${W} ${Hgt}" width="100%" style="max-width:920px">`;
+
+  // 阶段背景
+  s += `<rect x="${X(0)}" y="${T}" width="${X(6)-X(0)}" height="${ph}" fill="#eafaf1" opacity=".7"/>`;
+  s += `<rect x="${X(6)}" y="${T}" width="${X(12)-X(6)}" height="${ph}" fill="#fff8e6" opacity=".7"/>`;
+  s += `<rect x="${X(12)}" y="${T}" width="${pw-(X(12)-X(0))}" height="${ph}" fill="#fdecea" opacity=".7"/>`;
+  s += `<text x="${(X(0)+X(6))/2}" y="${T+16}" text-anchor="middle" font-size="12" fill="#27ae60">可用</text>`;
+  s += `<text x="${(X(6)+X(12))/2}" y="${T+16}" text-anchor="middle" font-size="12" fill="#b7791f">恶化</text>`;
+  s += `<text x="${(X(12)+X(H-1))/2}" y="${T+16}" text-anchor="middle" font-size="12" fill="#c0392b">失效</text>`;
+
+  // 网格 + y 轴刻度
+  for (let i = 0; i <= 5; ++i) {
+    const v = ymax * i / 5, y = Y(v);
+    s += `<line x1="${L}" y1="${y}" x2="${L+pw}" y2="${y}" stroke="#e4e9ef" stroke-width="1"/>`;
+    s += `<text x="${L-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#6b7c8d">${v.toFixed(3)}</text>`;
+  }
+  // x 轴刻度
+  for (let t = 0; t < H; t += 2) {
+    s += `<text x="${X(t)}" y="${T+ph+18}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t}</text>`;
+  }
+  s += `<text x="${L+pw/2}" y="${Hgt-12}" text-anchor="middle" font-size="12" fill="#34495e">想象步数</text>`;
+
+  // 基线
+  s += `<line x1="${L}" y1="${Y(baseline)}" x2="${L+pw}" y2="${Y(baseline)}" stroke="#95a5a6"
+         stroke-width="2" stroke-dasharray="7,5"/>`;
+  s += `<text x="${L+pw-6}" y="${Y(baseline)-7}" text-anchor="end" font-size="11" fill="#7f8c8d">基线 0.0385</text>`;
+
+  // 两条曲线
+  const path = arr => arr.map((v, t) => `${t ? 'L' : 'M'}${X(t).toFixed(1)},${Y(v).toFixed(1)}`).join(' ');
+  s += `<path d="${path(mu)}" fill="none" stroke="#3498db" stroke-width="3"/>`;
+  s += `<path d="${path(sample)}" fill="none" stroke="#e74c3c" stroke-width="3" stroke-dasharray="6,4"/>`;
+
+  // 图例
+  s += `<rect x="${L+10}" y="${T+ph-52}" width="14" height="4" fill="#e74c3c"/>`;
+  s += `<text x="${L+30}" y="${T+ph-46}" font-size="12" fill="#22303f">sample（按分布采样）</text>`;
+  s += `<rect x="${L+10}" y="${T+ph-32}" width="14" height="4" fill="#3498db"/>`;
+  s += `<text x="${L+30}" y="${T+ph-26}" font-size="12" fill="#22303f">mu（直接用均值，无采样噪声）</text>`;
+
+  s += `</svg>`;
+  document.getElementById('curve').innerHTML = s;
+})();
+
+/* ============ 误差累积链条 ============ */
+(function(){
+  const W = 920, H = 130;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:920px">`;
+  s += `<defs><marker id="ac" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+  const steps = [
+    ['没有观测修正', '#95a5a6'],
+    ['每步微小偏差', '#f5b041'],
+    ['emb_pred 漂移', '#e67e22'],
+    ['decoder 输出噪声', '#e74c3c']
+  ];
+  const bw = 190, gap = 22;
+  let x = 15;
+  steps.forEach((st, i) => {
+    s += `<rect x="${x}" y="35" width="${bw}" height="60" rx="8" fill="#fff" stroke="${st[1]}" stroke-width="2"/>`;
+    s += `<text x="${x+bw/2}" y="62" text-anchor="middle" font-size="13" font-weight="bold" fill="#22303f">${st[0]}</text>`;
+    s += `<text x="${x+bw/2}" y="80" text-anchor="middle" font-size="11" fill="#6b7c8d">step ${i+1}</text>`;
+    if (i < steps.length - 1) {
+      s += `<line x1="${x+bw}" y1="65" x2="${x+bw+gap}" y2="65" stroke="#7f8c8d" stroke-width="2" marker-end="url(#ac)"/>`;
+    }
+    x += bw + gap;
+  });
+  s += `<text x="${W/2}" y="20" text-anchor="middle" font-size="12" fill="#6b7c8d">想象时的误差累积（每一步都放大上一步的偏差）</text>`;
+  s += `</svg>`;
+  document.getElementById('chain').innerHTML = s;
+})();
+</script>
+</body>
+</html>

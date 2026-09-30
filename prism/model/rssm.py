@@ -131,6 +131,62 @@ class RSSM(nn.Module):
         out['recon'] = self.decoder(out['emb_pred'].reshape(T * B, -1)).reshape(T, B, *images.shape[2:])
         return out
 
+    # ---------- 想象（做梦）----------
+    def observe(self, images, proprio, actions):
+        """用一段真实观测建立初始状态，返回最后的 (h, z)。
+
+        z 走 posterior（看得到图像），与 forward 完全一致 —— 相当于"先看清现在"。
+        """
+        T, B = images.shape[0], images.shape[1]
+        device = images.device
+        flat = images.reshape(T * B, *images.shape[2:])
+        emb = self.encoder(flat).reshape(T, B, -1)
+
+        h, z = self.init_state(B, device)
+        for t in range(T):
+            gru_in = torch.cat([z, actions[t], proprio[t]], dim=-1)
+            h = self.gru(gru_in, h)
+            post = self.post_net(torch.cat([h, emb[t]], dim=-1))
+            mu_q, lv_q = post.chunk(2, dim=-1)
+            z = self._rsample(mu_q, lv_q)
+        return h, z
+
+    def imagine(self, h, z, actions, proprio, horizon, sample=True):
+        """不看任何图像，只用 prior 往前推 horizon 步。
+
+        与 forward 的关键区别：z 从 **prior** 采样（posterior 需要 emb，想象时没有）。
+        本体也用模型自己的预测值（没有真值可喂）。
+
+        参数
+        ----
+        h, z       : observe() 给出的初始状态，形状 (B,H) / (B,Z)
+        actions    : (horizon, B, A) 未来要执行的动作
+        proprio    : (B, P) 起始本体（第一步 GRU 输入）
+        horizon    : 往前推几步
+
+        返回
+        ----
+        emb_pred : (horizon, B, E) 想象出的画面摘要（可送 decoder 得到想象画面）
+        prop_pred: (horizon, B, P) 想象出的本体
+        """
+        emb_hats, prop_hats = [], []
+        for t in range(horizon):
+            # 1) 用上一步的 z 和本体推进记忆
+            gru_in = torch.cat([z, actions[t], proprio], dim=-1)
+            h = self.gru(gru_in, h)
+            # 2) 从 prior 得到 z（没有图像可看）
+            #    sample=True  : 按分布采样（带随机噪声，画面可能出现噪点）
+            #    sample=False : 直接用均值 mu（确定性推演，画面稳定）
+            mu_p, lv_p = self.prior_net(h).chunk(2, dim=-1)
+            z = self._rsample(mu_p, lv_p) if sample else mu_p
+            # 3) 预测这一"想象帧"的摘要与本体
+            hz = torch.cat([h, z], dim=-1)
+            emb_hats.append(self.obs_pred(hz))
+            proprio = self.proprio_pred(hz)      # 下一步用自己预测的本体
+            prop_hats.append(proprio)
+
+        return torch.stack(emb_hats), torch.stack(prop_hats)
+
 
 def rssm_loss(out, images, proprio, kl_weight=1.0, emb_weight=1.0,
               recon_weight=1.0, proprio_weight=1.0, free_bits=0.0):

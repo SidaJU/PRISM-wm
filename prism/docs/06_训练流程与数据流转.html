@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · 训练流程与数据流转</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#fff; --ink:#22303f; --muted:#6b7c8d;
+    --line:#e4e9ef; --r:#e74c3c; --g:#27ae60; --b:#3498db;
+    --hl:#f5b041; --pp:#8e44ad; --accent:#2d7ff9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.75}
+  .wrap{max-width:1020px;margin:0 auto;padding:34px 20px 90px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 26px;margin-bottom:20px}
+  h2{font-size:19px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{display:inline-block;min-width:27px;height:27px;line-height:27px;text-align:center;
+          background:var(--accent);color:#fff;border-radius:8px;font-size:14px;margin-right:9px}
+  h3{font-size:15px;margin:20px 0 8px;color:#34495e}
+  p{color:#3c4c5c;margin:10px 0}
+  .note{background:#eef6ff;border-left:4px solid var(--accent);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .key{background:#fff8e6;border-left:4px solid var(--hl);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .warn{background:#fdecea;border-left:4px solid var(--r);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .ok{background:#eafaf1;border-left:4px solid var(--g);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .cap{text-align:center;color:var(--muted);font-size:13px;margin-top:10px}
+  table{border-collapse:collapse;margin:12px auto;font-size:14px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 13px;text-align:left}
+  th{background:#f4f6f8;color:#34495e}
+  code{background:#f4f6f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  pre{background:#f4f6f8;padding:12px 16px;border-radius:8px;overflow-x:auto;
+      font-family:Consolas,monospace;font-size:13px;line-height:1.6;color:#2c3e50}
+  ul{padding-left:20px;font-size:14px}
+  li{margin:5px 0}
+  svg{display:block;margin:0 auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>训练流程与数据流转</h1>
+  <p class="sub">PRISM-WM 笔记 06 · 从磁盘上的 npz，一路走到 loss 和参数更新</p>
+
+  <div style="background:#fff;border:1px solid #e4e9ef;border-radius:14px;padding:16px 22px;margin-bottom:20px;font-size:14px">
+    <b>学习进度</b>
+    <table style="margin-top:8px">
+      <tr><th>笔记</th><th>内容</th><th>状态</th></tr>
+      <tr><td>01–03</td><td>Encoder：一帧 → 256 维 emb</td><td>✅</td></tr>
+      <tr><td>04</td><td>RSSM：emb → posterior → z → 三条路 → prior/posterior</td><td>✅</td></tr>
+      <tr><td>05</td><td>loss 四项与训练目标</td><td>✅</td></tr>
+      <tr><td><b>06</b></td><td><b>训练流程与数据流转</b></td><td><b>← 当前</b></td></tr>
+      <tr><td>07</td><td>imagine()：让模型真正会"做梦"</td><td>⬜</td></tr>
+    </table>
+  </div>
+
+  <!-- 0 -->
+  <section>
+    <h2><span class="num">0</span>一句话</h2>
+    <p>训练就是：<b>数据从磁盘被切成片段、打包成批、送进 RSSM、算出四项 loss、反向传播更新参数</b>，
+       循环若干轮（epoch）。</p>
+    <div class="key">这一页专门讲<b>数据怎么流</b>——每个环节的形状是什么、为什么这么设计。
+       （loss 本身的细节在笔记 05。）</div>
+  </section>
+
+  <!-- 1 -->
+  <section>
+    <h2><span class="num">1</span>数据在哪：磁盘结构</h2>
+    <pre>prism/data/L0/
+├── obs/            ← 训练只挂载这个目录
+│   ├── ep_00000.npz   images (100,64,64,3) uint8
+│   │                  proprio (100,10)   actions (100,4)
+│   └── ...
+└── gt/             ← 真值（物体位置等），训练不加载</pre>
+    <p>W1 采集时故意把「能看的」和「作弊数据」<b>物理分开</b>，训练代码根本加载不到 <code>gt/</code>，
+       从工程上杜绝偷看答案。</p>
+  </section>
+
+  <!-- 2 -->
+  <section>
+    <h2><span class="num">2</span>完整流转图</h2>
+    <div id="flowAll"></div>
+    <div class="cap">从磁盘到参数更新，一共 6 步</div>
+  </section>
+
+  <!-- 3 -->
+  <section>
+    <h2><span class="num">3</span>逐步拆解</h2>
+
+    <h3>① Dataset：把一个 episode 切成多个片段</h3>
+    <pre># prism/model/dataset.py  42 行
+for s in range(0, T - seq_len + 1, stride):
+    self.samples.append((fi, s))        # (哪个文件, 从第几帧开始)</pre>
+    <table>
+      <tr><th>参数</th><th>默认</th><th>作用</th></tr>
+      <tr><td><code>seq_len</code></td><td>32</td><td>每个片段多少帧</td></tr>
+      <tr><td><code>stride</code></td><td>8</td><td>滑窗步长（<b>小于 32 → 片段之间有重叠</b>）</td></tr>
+      <tr><td><code>train_ratio</code></td><td>0.9</td><td>前 90% 的 episode 用于训练</td></tr>
+    </table>
+    <div class="ok"><b>一个好设计</b>（第 31–33 行）：train / val 是<b>按 episode 划分</b>的，
+       不是按片段 —— 避免同一局既用来训练又用来验证。</div>
+    <div class="warn"><b>一个要注意的点</b>：<code>stride=8</code> &lt; <code>seq_len=32</code>，
+       所以同一 episode 切出的相邻片段<b>有 24 帧重叠</b> —— 训练集内的片段并不完全独立。
+       （验证集因为是不同 episode，所以不受影响。）</div>
+
+    <h3>② DataLoader：打包成批</h3>
+    <p>每次取 <code>batch_size</code> 个片段，堆成 <code>(B, T, C, H, W)</code>。</p>
+
+    <h3>③ to_seq_batch：转置成时间在前</h3>
+    <pre># prism/train/train_rssm.py  24 行
+images = batch['images'].to(device).permute(1, 0, 2, 3, 4).contiguous()</pre>
+    <p>从 <code>(B,T,...)</code> 转成 <code>(T,B,...)</code>。
+       <b>为什么</b>：主循环是 <code>for t in range(T)</code>，
+       这样 <code>images[t]</code> 一次就拿到"所有序列在这一帧的画面" <code>(B,3,64,64)</code>，
+       既方便又高效（<code>.contiguous()</code> 让内存连续，访问更快）。</p>
+
+    <h3>④ RSSM：主循环（核心，第 105–122 行）</h3>
+    <pre>105  for t in range(T):
+106      gru_in = torch.cat([z, actions[t], proprio[t]], dim=-1)    # (B, 46)
+107      h = self.gru(gru_in, h)                                    # (B, 200)
+109      prior = self.prior_net(h)                                  # (B, 64)
+110      mu_p, lv_p = prior.chunk(2, dim=-1)                        # 各 (B, 32)
+112      post = self.post_net(torch.cat([h, emb[t]], dim=-1))       # (B, 64)
+113      mu_q, lv_q = post.chunk(2, dim=-1)                         # 各 (B, 32)
+114      z = self._rsample(mu_q, lv_q)                              # (B, 32)
+117      kl = 0.5 * (lv_p - lv_q + (lv_q.exp() + (mu_q-mu_p)**2)
+                     / lv_p.exp().clamp(min=1e-4) - 1)
+118      kls.append(kl.sum(-1))                                     # (B,)
+120      hz = torch.cat([h, z], dim=-1)                             # (B, 232)
+121      outs['emb_pred'].append(self.obs_pred(hz))                 # (B, 256)
+122      outs['proprio_pred'].append(self.proprio_pred(hz))         # (B, 10)</pre>
+
+    <table>
+      <tr><th>行</th><th>在做什么</th><th>输出形状</th></tr>
+      <tr><td>106</td><td>拼 GRU 输入：<b>z（上一帧的）+ 动作 + 本体</b></td><td>(B, 46)</td></tr>
+      <tr><td>107</td><td>GRU 更新记忆：h[t−1] → <b>h[t]</b></td><td>(B, 200)</td></tr>
+      <tr><td>109–110</td><td><b>prior（闭卷）</b>：只看 h → mu_p / lv_p</td><td>(B, 32) ×2</td></tr>
+      <tr><td>112–113</td><td><b>posterior（开卷）</b>：看 h + emb[t] → mu_q / lv_q</td><td>(B, 32) ×2</td></tr>
+      <tr><td>114</td><td>采样出 z —— <b>只用 posterior</b></td><td>(B, 32)</td></tr>
+      <tr><td>117–118</td><td>算 KL，并对 32 维求和</td><td>(B,)</td></tr>
+      <tr><td>120</td><td>拼 <code>hz = cat(h, z)</code></td><td>(B, 232)</td></tr>
+      <tr><td>121–122</td><td>两个预测头：猜画面摘要 / 猜本体</td><td>(B, 256) / (B, 10)</td></tr>
+    </table>
+
+    <div class="key"><b>三个必须注意的点</b><br>
+      ① <b>z 的时序</b>：106 行用的 z 是<b>上一轮</b>算出来的（t−1）；114 行算出的新 z 供<b>下一轮</b>用。<br>
+      ② <b>prior 是陪练</b>：109–110 算出了 mu_p/lv_p，但 114 行采样<b>只用 posterior</b>；
+         prior 唯一的用处是喂给 117 行的 KL。<br>
+      ③ <b>循环外还有两次"批量操作"</b>：98–99 行一次性编码全部帧得到 emb；
+         130 行一次性解码全部帧得到 recon —— 都是为了 GPU 效率。</div>
+
+    <h3>⑤ loss 与参数更新</h3>
+    <pre>losses = rssm_loss(out, images, proprio, kl_weight=..., free_bits=...)
+losses['loss'].backward()
+torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)   # 梯度裁剪，防爆炸
+opt.step()</pre>
+    <p><code>clip_grad_norm_(..., 1.0)</code>：如果梯度总长度超过 1.0 就按比例缩小 ——
+       RNN 训练的标准做法，防止梯度爆炸。</p>
+
+    <h3>⑥ 保存权重</h3>
+    <p>每个 epoch 存一次 <code>rssm_epoch{N}.pt</code>（含模型参数 + 训练参数）。</p>
+  </section>
+
+  <!-- 4 -->
+  <section>
+    <h2><span class="num">4</span>形状流转总表（核心）</h2>
+    <table>
+      <tr><th>阶段</th><th>形状</th><th>说明</th></tr>
+      <tr><td>磁盘 npz 里</td><td><code>(100, 64, 64, 3)</code></td><td>一个 episode，HWC 排列，uint8</td></tr>
+      <tr><td>Dataset 取一个样本</td><td><code>(32, 3, 64, 64)</code></td><td>转成 CHW，除以 255 → 0~1</td></tr>
+      <tr><td>DataLoader 打包</td><td><code>(16, 32, 3, 64, 64)</code></td><td>B=16 条序列</td></tr>
+      <tr><td><b>转置后喂 RSSM</b></td><td><code>(32, 16, 3, 64, 64)</code></td><td>T 在前</td></tr>
+      <tr><td>Encoder 输入（合并 T·B）</td><td><code>(512, 3, 64, 64)</code></td><td>一次性编码 512 张图</td></tr>
+      <tr><td><code>emb</code></td><td><code>(32, 16, 256)</code></td><td>每帧每序列一个 256 维摘要</td></tr>
+      <tr><td>循环里 <code>emb[t]</code></td><td><code>(16, 256)</code></td><td>当前帧、所有序列</td></tr>
+      <tr><td><code>h</code>（记忆）</td><td><code>(16, 200)</code></td><td><b>16 条序列各一份</b></td></tr>
+      <tr><td><code>z</code>（判断）</td><td><code>(16, 32)</code></td><td>同上</td></tr>
+      <tr><td><code>gru_in</code></td><td><code>(16, 46)</code></td><td>z+动作+本体</td></tr>
+      <tr><td><code>emb_pred</code></td><td><code>(32, 16, 256)</code></td><td>每步收集后堆起来</td></tr>
+      <tr><td><code>recon</code>（重建图）</td><td><code>(32, 16, 3, 64, 64)</code></td><td>一次性解码 512 张</td></tr>
+      <tr><td><code>kl</code></td><td><code>(32, 16)</code></td><td>已对 32 维求和</td></tr>
+    </table>
+    <div class="key"><b>B 条序列之间完全独立</b>：各有自己的 h 和 z，互不影响。
+       B 只是为了<b>并行快</b>和<b>梯度稳</b>，不是把 16 段接成一段长录像。</div>
+
+    <h3>循环内维度速查表</h3>
+    <table>
+      <tr><th>变量</th><th>形状</th><th>含义</th></tr>
+      <tr><td><code>images</code></td><td>(T, B, 3, 64, 64)</td><td>一批序列（T 帧 × B 条）</td></tr>
+      <tr><td><code>emb</code></td><td>(T, B, 256)</td><td>所有帧的画面摘要</td></tr>
+      <tr><td><code>emb[t]</code></td><td>(B, 256)</td><td>当前帧、所有序列</td></tr>
+      <tr><td><code>h</code></td><td>(B, 200)</td><td>记忆（<b>B 条各一份</b>）</td></tr>
+      <tr><td><code>z</code></td><td>(B, 32)</td><td>对当前局面的判断</td></tr>
+      <tr><td><code>gru_in</code></td><td>(B, 46)</td><td>z(32) + 动作(4) + 本体(10)</td></tr>
+      <tr><td><code>prior</code> / <code>post</code></td><td>(B, 64)</td><td>mu 和 logvar 拼在一起（32+32）</td></tr>
+      <tr><td><code>mu_q</code> / <code>lv_q</code></td><td>(B, 32)</td><td>chunk 拆开后</td></tr>
+      <tr><td><code>kl</code></td><td>(B,)</td><td>已对 32 维求和</td></tr>
+      <tr><td><code>hz</code></td><td>(B, 232)</td><td>h(200) + z(32)</td></tr>
+      <tr><td><code>emb_pred[t]</code></td><td>(B, 256)</td><td>猜的画面摘要</td></tr>
+      <tr><td><code>proprio_pred[t]</code></td><td>(B, 10)</td><td>猜的本体状态</td></tr>
+      <tr><td><code>recon</code></td><td>(T, B, 3, 64, 64)</td><td>重建出的图像</td></tr>
+    </table>
+    <div class="note">规律：<b>凡是带 B 的，都是"B 条序列各一份"</b>；
+       循环里每一步处理的都是"当前帧 × 所有序列"。</div>
+
+    <h3>补充：代码里的 <code>shape[2:]</code> 和 <code>*</code> 是什么</h3>
+    <p>第 98 行和第 130 行都有这个写法：</p>
+    <pre>images.reshape(T * B, *images.shape[2:])</pre>
+    <table>
+      <tr><th>片段</th><th>含义</th><th>例子（shape = (32,16,3,64,64)）</th></tr>
+      <tr><td><code>.shape</code></td><td>张量的形状（可当元组用）</td><td><code>(32, 16, 3, 64, 64)</code></td></tr>
+      <tr><td><code>[2:]</code></td><td><b>切片</b>：取索引 2 及之后的所有元素</td><td><code>(3, 64, 64)</code></td></tr>
+      <tr><td><code>*</code></td><td><b>解包</b>：把元组拆成独立参数</td><td><code>reshape(512, 3, 64, 64)</code></td></tr>
+    </table>
+    <p>所以整句等价于 <code>reshape(512, 3, 64, 64)</code>。</p>
+    <div class="note"><b>为什么要这么写</b>（而不是直接写 3,64,64）：
+       换分辨率时代码不用改 —— 如果哪天图像从 64×64 换成 128×128，这一行仍然正确。</div>
+  </section>
+
+  <!-- 5 -->
+  <section>
+    <h2><span class="num">5</span>我们实际跑的数字</h2>
+    <h3>数据切分全流程（用真实数字走一遍）</h3>
+    <pre>668 局（每局 ~80 帧，共 59369 帧）
+  ↓ 逐局滑窗（窗口 32、步长 8）
+4356 个样本（每个样本 = 32 帧片段；相邻样本重叠 24 帧）
+  ↓ shuffle 打乱，每次抓 16 个
+一个 batch = 16 个样本 = 16×32 = 512 帧 → 转置成 (32,16,3,64,64)
+  ↓ 抓完 272 个 batch
+= 1 个 epoch（4356 个样本全过一遍）
+  ↓ 重复 20 次
+= 完整训练（5440 次 forward+backward）</pre>
+    <div class="warn"><b>易混点：backward 的频率是「每个 batch 一次」</b><br>
+      上面的「跑完 32 步 → 算总 loss → 一次 backward」说的是<b>一个 batch 内部</b>（32 是时间步数，不是 batch 数）。<br>
+      <b>每个 batch 都有自己的一次 forward + 一次 backward + 一次参数更新</b>：<br>
+      1 个 epoch = 272 个 batch = <b>272 次 backward、272 次参数更新</b>；20 epoch = 5440 次。<br>
+      不要理解成「一个 epoch 才 backward 一次」。</div>
+    <div class="key">注意两个易混点：<br>
+      ① <b>一局滑窗不是 16 次</b> —— (80−32)/8+1 ≈ <b>7 次</b>（16 次需要 152 帧，一局只有 ~80 帧）；<br>
+      ② <b>B=16 是跨局抓的</b> —— 一个 batch 里的 16 个样本来自不同局的不同位置（shuffle 后随机），不是"同一局里连续滑 16 次"。</div>
+
+    <table>
+      <tr><th>项</th><th>值</th><th>备注</th></tr>
+      <tr><td>episode 数</td><td><b>743</b></td><td>重采后（带位姿导出）；旧版 928 已备份为 L0_v1</td></tr>
+      <tr><td>总帧数</td><td>59,369</td><td>平均每局 79.9 帧（stall/drop 终止导致长短不一）</td></tr>
+      <tr><td>train / val 划分</td><td><b>668 局 / 75 局</b></td><td>按 episode 9:1，同一局不跨集</td></tr>
+      <tr><td>train samples</td><td><b>4,356</b></td><td>32 帧片段（滑窗 stride=8）</td></tr>
+      <tr><td>val samples</td><td><b>494</b></td><td>同上</td></tr>
+      <tr><td>batch / 每 epoch</td><td>16 / <b>272</b> 个 batch</td></tr>
+      <tr><td>一个 batch 的帧数</td><td>16×32 = <b>512 帧</b></td><td>B×T</td></tr>
+      <tr><td>速度</td><td>约 50–55 秒 / epoch（5060 显卡）</td><td></td></tr>
+      <tr><td>20 epoch</td><td>约 17 分钟</td><td></td></tr>
+      <tr><td>模型总参数</td><td>3,849,645（Encoder+Decoder 占 90%）</td><td></td></tr>
+    </table>
+
+    <div class="warn"><b>勘误记录</b>：本页早期版本写的是「928 episode / 7,272 样本 / 454 batch」——
+       那是<b>重采前</b>的旧数据集（无位姿导出，已备份为 L0_v1）。
+       当前 L0 为重采版（743 episode，带位姿），数字以本表为准。</div>
+  </section>
+
+  <!-- 6 -->
+  <section>
+    <h2><span class="num">6</span>三个记忆点</h2>
+    <ul>
+      <li><code>images</code> 是 <b>5 维</b> <code>(T, B, C, H, W)</code>；T=32 帧，B=16 条独立序列</li>
+      <li><b>B 条序列各自有独立的 h 和 z</b>，互不影响；B 只为了并行和梯度稳定</li>
+      <li>流转关键一步：<code>permute(1,0,...)</code> 把 <code>(B,T)</code> 转成 <code>(T,B)</code>，
+          方便主循环一次取一帧</li>
+    </ul>
+    <div class="note"><b>下一页（笔记 07）</b>：<code>imagine()</code> ——
+       训练时 z 走 posterior，想象时改走 prior，让模型真正会"做梦"。</div>
+  </section>
+
+  <!-- 7 -->
+  <section>
+    <h2><span class="num">7</span>训练代码 FAQ：疑问与勘误</h2>
+    <p>读 <code>train_rssm.py</code> 时容易卡住的地方，以及之前记错的数字。</p>
+
+    <table>
+      <tr><th>疑问</th><th>答案</th></tr>
+      <tr>
+        <td><code>out = model(...)</code> 为什么没看到 <code>forward</code>？</td>
+        <td>Python 的 <code>__call__</code> 机制：<code>model(x)</code> 自动调用 <code>model.forward(x)</code>。
+          <b>不要</b>直接写 <code>model.forward(x)</code>——会跳过 PyTorch 的 hooks。</td>
+      </tr>
+      <tr>
+        <td><code>model.train()</code> 哪来的？RSSM 里没定义这个方法</td>
+        <td>继承自 <code>nn.Module</code>（已验证：RSSM 自己没定义，<code>nn.Module</code> 有）。
+          它切换训练/评估模式，影响 Dropout / BatchNorm。
+          <b>我们的模型没有这两种层，所以 <code>train()</code> 实际无影响</b>（写上只是规范）。</td>
+      </tr>
+      <tr>
+        <td><code>eval()</code> 就是推理吗？</td>
+        <td><code>eval()</code> 是“推理该用的模式”；完整推理 = <code>model.eval()</code> + <code>with torch.no_grad()</code> + 前向。
+          两者是不同事：eval 管层行为，no_grad 管梯度（省显存）。</td>
+      </tr>
+      <tr>
+        <td>滑窗和 shuffle 在哪？</td>
+        <td><b>滑窗是我们写的</b>（<code>dataset.py</code>：遍历每一局生成 <code>(局索引, 起始帧)</code>）；
+          <b>shuffle 是 DataLoader 的</b>（传 <code>shuffle=True</code>，PyTorch 内部打乱）。</td>
+      </tr>
+      <tr>
+        <td><code>to_seq_batch</code> 是什么函数？</td>
+        <td>我们自己写的预处理：<code>.to(device)</code> 搬 GPU + <code>permute(1,0,...)</code> 转置 + <code>contiguous()</code> 连续化。
+          把 DataLoader 的 <code>(B,T,...)</code> 变成 RSSM 要的 <code>(T,B,...)</code>。</td>
+      </tr>
+      <tr>
+        <td><code>clip_grad_norm_(..., 1.0)</code> 干什么？</td>
+        <td><b>梯度裁剪</b>：把梯度总长度压到 1.0 以内，防止 GRU 沿时间反传时梯度爆炸。
+          <b>必须在 <code>backward()</code> 之后、<code>step()</code> 之前</b>调用——放错位置就没用。</td>
+      </tr>
+      <tr>
+        <td>一个 batch 是 16 个模型吗？</td>
+        <td><b>不是</b>。参数<b>只有 1 份（共享）</b>；数据是 16 份；记忆 h 是 16 份（形状 (16,200)，行与行独立）。
+          16 份误差平均成 1 个 loss，反向后更新<b>那一套</b>参数。</td>
+      </tr>
+      <tr>
+        <td>每一帧都算 loss，还是 32 步才算一次？</td>
+        <td><b>每帧都产生 loss 分量</b>（32 步 × 16 条 = 512 个），但 32 步跑完后
+          <b>汇总平均成 1 个总 loss</b>，然后 <b>一次 backward</b>（梯度沿 32 步时间链往回传，即 BPTT）。</td>
+      </tr>
+      <tr>
+        <td>backward 多久一次？</td>
+        <td><b>每个 batch 一次</b>（不是每个 epoch）。一个 epoch = 272 个 batch =
+          <b>272 次 backward 与参数更新</b>；20 epoch 共 5440 次。</td>
+      </tr>
+    </table>
+
+    <div class="warn"><b>勘误记录</b>：本页早期版本写的是「928 episode / 7,272 样本 / 454 batch / 一个 epoch 一次 backward」——
+      这些都是过时或错误的表述：<br>
+      ① 928/7272/454 是<b>重采前</b>旧数据集（无位姿导出，已备份为 L0_v1）的数字，
+         当前 L0 为 <b>743 episode / 4356 样本 / 272 batch</b>（见第 5 节）；<br>
+      ② backward 是<b>每个 batch 一次</b>，一个 epoch 共 272 次，不是“一个 epoch 一次”。</div>
+  </section>
+
+</div>
+
+<script>
+/* ============ 数据流转图 ============ */
+(function(){
+  const W = 960, H = 470;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:960px">`;
+  s += `<defs><marker id="a9" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2,fs){
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s += `<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="${fs||13}"
+           font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s += `<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  function arrow(x1,y1,x2,y2){
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#7f8c8d" stroke-width="2" marker-end="url(#a9)"/>`;
+  }
+
+  box(60,  15, 250, 55, '#f4f6f8', '#95a5a6', '① 磁盘 obs/*.npz', '(100, 64, 64, 3) uint8', 12);
+  box(60,  90, 250, 55, '#e8f2ff', '#3498db', '② Dataset 切窗口', '一个样本 (32, 3, 64, 64)', 12);
+  box(60, 165, 250, 55, '#e8f2ff', '#3498db', '③ DataLoader 打包', '(16, 32, 3, 64, 64)  B=16', 12);
+  box(60, 240, 250, 55, '#fff8e6', '#f5b041', '④ permute 转置', '(32, 16, 3, 64, 64)  T 在前', 12);
+  box(60, 315, 250, 55, '#f5eef8', '#8e44ad', '⑤ RSSM 主循环 32 步', 'emb (32, 16, 256)', 12);
+  box(60, 390, 250, 55, '#fdecea', '#e74c3c', '⑥ 四项 loss → backward', '更新 385 万参数', 12);
+
+  arrow(185, 70,  185, 88);
+  arrow(185, 145, 185, 163);
+  arrow(185, 220, 185, 238);
+  arrow(185, 295, 185, 313);
+  arrow(185, 370, 185, 388);
+
+  // 右侧注解
+  s += `<text x="345" y="40" font-size="12" fill="#6b7c8d">一局录像，HWC 排列（通道在最后）</text>`;
+  s += `<text x="345" y="115" font-size="12" fill="#6b7c8d">滑窗 stride=8，切成多个 32 帧片段</text>`;
+  s += `<text x="345" y="190" font-size="12" fill="#6b7c8d">16 条序列打包，各自独立</text>`;
+  s += `<text x="345" y="265" font-size="12" fill="#6b7c8d">为了主循环 images[t] 一次取一帧(batch)</text>`;
+  s += `<text x="345" y="340" font-size="12" fill="#6b7c8d">每步：GRU 更新 h → posterior 出 z → 预测</text>`;
+  s += `<text x="345" y="415" font-size="12" fill="#6b7c8d">重建 + emb + 本体 + KL，梯度裁剪后更新</text>`;
+
+  s += `</svg>`;
+  document.getElementById('flowAll').innerHTML = s;
+})();
+</script>
+</body>
+</html>
