@@ -336,6 +336,69 @@ opt.step()</pre>
       ② backward 是<b>每个 batch 一次</b>，一个 epoch 共 272 次，不是“一个 epoch 一次”。</div>
   </section>
 
+  <!-- 8 -->
+  <section>
+    <h2><span class="num">8</span>数据字段详解：proprio 与 action（原生是什么样？）</h2>
+
+    <h3>① 原生输出：环境返回的 observation 是 25 维</h3>
+    <p>数据来自 <b>Gymnasium-Robotics 的 FetchPush 环境**（底层 MuJoCo 物理引擎）。每步 <code>env.step(action)** 返回的 <code>obs['observation']** 是 <b>25 维**的向量**，包含机械臂和物体的完整状态**：</p>
+    <table>
+      <tr><th>切片</th><th>含义</th><th>维度</th><th>是否进 proprio</th></tr>
+      <tr><td>0:3</td><td>grip_pos（末端位置 xyz）</td><td>3</td><td>✅ 进（机械臂自身）</td></tr>
+      <tr><td>3:6</td><td>object_pos（物体位置 xyz）</td><td>3</td><td>❌ 不进（物体信息 → 放 gt/ 用于评测）</td></tr>
+      <tr><td>6:9</td><td>object_rel_pos（物体相对末端位置）</td><td>3</td><td>❌ 不进</td></tr>
+      <tr><td>9:11</td><td>gripper_state（夹爪状态 2 维）</td><td>2</td><td>✅ 进（机械臂自身）</td></tr>
+      <tr><td>11:14</td><td>object_rot（物体旋转）</td><td>3</td><td>❌ 不进</td></tr>
+      <tr><td>14:17</td><td>object_velp（物体线速度）</td><td>3</td><td>❌ 不进</td></tr>
+      <tr><td>17:20</td><td>object_velr（物体角速度）</td><td>3</td><td>❌ 不进</td></tr>
+      <tr><td>20:23</td><td>grip_velp（末端线速度 xyz）</td><td>3</td><td>✅ 进（机械臂自身）</td></tr>
+      <tr><td>23:25</td><td>gripper_vel（夹爪速度 2 维）</td><td>2</td><td>✅ 进（机械臂自身）</td></tr>
+    </table>
+
+    <h3>② proprio 是"切片拼接"，不是 linear（线性层）</h3>
+    <p><code>dataset.py</code> 里定义了一个切片表：</p>
+    <pre>PROPRIO_SLICES = [(0, 3), (9, 11), (20, 23), (23, 25)</pre>
+    <p>即**：从 25 维 observation 里
+      <b>按索引切片**（np.concatenate([obs[0:3], obs[9:11], obs[20:23], obs[23:25]）**
+      拼接成 10 维**。</p>
+    <div class="warn"><b>关键澄清**：这不是神经网络的 linear（线性层）**，也<b>没有任何可学习参数**——
+      只是<b>固定的 numpy 切片 + 拼接**。
+      环境的原生 25 维 → 我们只取其中 10 维（机械臂自身状态 → 3+2+3+2 = <b>10 维 proprio**。</div>
+    <p>被丢弃的 15 维**（物体位置/相对位置/旋转/速度/角速度）→ 写到 <code>gt/object_state.npz**（仅评测用**，不进模型**——
+      这保证了模型"看不到"物体真值**，只能从图像里学**。</p>
+
+    <h3>③ action 4 维：原生就是 4 维，没有变换</h3>
+    <p>action 是<b>我们喂给环境的指令**（不是环境输出**。</p>
+    <table>
+      <tr><th>维度</th><th>含义</th><th>范围</th><th>来源</th></tr>
+      <tr><td>0-2</td><td>末端位移指令 dx/dy/dz</td><td>归一化 -1~1</td><td>我们的启发式 <code>heuristic_push()**（不是 MuJoCo 输出）</td></tr>
+      <tr><td>3</td><td>夹爪控制</td><td>归一化 -1~1</td><td>启发式固定为 0（夹爪保持闭合推物体）</td></tr>
+    </table>
+    <div class="note"><b>action 不是 linear 转换来的**，而是<b>采集脚本生成**（动作是启发式**（我们写的策略**，不是神经网络**。
+      模型训练时"吃" action**（输入**，用它学"动作 → 世界如何变化**。</div>
+
+    <h3>④ 实际数值示例（样本 #57，t=0 帧）</h3>
+    <table>
+      <tr><th>字段</th><th>数值</th></tr>
+      <tr><td>proprio（10 维）</td><td><code>+1.2842, +0.8774, +0.4189, 0, 0, -0.0024, +0.0023, +0.0028, 0, +0.0012</td></tr>
+      <tr><td>action（4 维）</td><td><code>-0.0871, +0.0188, -0.0036, -0.0254</td></tr>
+    </table>
+
+    <h3>⑤ 数据在哪（训练用）</h3>
+    <table>
+      <tr><th>目录</th><th>内容</th><th>局数</th><th>用途</th></tr>
+      <tr><td><code>prism/data/L0/obs/*.npz**（images + proprio + actions）</td><td>743 局**（重采**，当前训练数据。</td><td>✅ 训练用（模型唯一能吃**。</td></tr>
+      <tr><td><code>prism/data/L0/gt/*.npz**（object_state / achieved_goal / desired_goal / success）</td><td>同上 743 局</td><td>❌ 仅评测**（模型看不到。</td></tr>
+      <tr><td><code>prism/data/L0_v1/**（旧 1241 局**（含"推落桌面 / 静止污染"的问题数据**。</td><td>1241 局</td><td>已废弃**（仅作 v1 对照 / 复现塌缩用。</td></tr>
+    </table>
+
+    <h3>⑥ 两个数据观察（写进笔记的原因）</h3>
+    <ul>
+      <li><b>proprio 的夹爪维（索引 3,4）恒为 0** —— FetchPush 夹爪保持闭合**，这两维不携带信息**（数据特性**。</li>
+      <li><b>速度/动作都很小**（velp ±0.02 m/s**，action ±0.09** —— 这段序列运动微弱**，这正是"想象不动"的数据根因**（见笔记 07 第 8 节**。</li>
+    </ul>
+  </section>
+
 </div>
 
 <script>

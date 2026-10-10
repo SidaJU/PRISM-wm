@@ -6,6 +6,9 @@ prism/ckpt/
 *.safetensors
 *.bin
 
+# ===== 运行结果归档（每次跑 bat 生成，不进仓库，避免体积膨胀）=====
+prism/runs/**
+
 # ===== 数据集 =====
 prism/data/
 *.npz

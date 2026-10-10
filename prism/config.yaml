@@ -1,0 +1,53 @@
+# ============================================================
+#  PRISM-WM 统一配置文件
+#
+#  改参数就改这里，然后双击对应的 bat 即可：
+#    prism/tools/run_train.bat     训练 + 自动出 loss 曲线
+#    prism/tools/run_imagine.bat   推理 imagine + 自动出每步数据
+#
+#  优先级: 命令行参数 > 本配置文件 > 代码内置默认值
+# ============================================================
+
+# ---------------- 训练 ----------------
+train:
+  data: prism/data/L0          # 数据集目录
+  epochs: 20                   # 训练轮数
+  batch: 16                    # B（一次多少条序列）
+  seq: 32                      # T（一条序列多少帧）
+  lr: 0.001                    # 学习率
+  latent: 32                   # z 维度
+  hidden: 200                  # h 维度
+  emb: 256                     # emb 维度
+  kl_weight: 1.0               # KL 在 loss 中的权重
+  free_bits: 0.1               # KL 下限。对照实验结论：**0.1 优于 0.01**，勿再调低。
+                               #   0.1  → 真实 KL≈0.020 → 第20步想象 MSE 0.0049（好于基线 0.038）
+                               #   0.01 → 真实 KL≈0.006 → 第20步想象 MSE 0.0509（差于基线）
+                               #   原因：KL 过低 → z 承载信息减少 → 长程推演退化（见报告第 7 节）。
+  max_episodes: null           # 只取前 N 局（快速冒烟用），null = 全部
+  out: prism/runs              # 每次运行在其下生成 train_<时间戳> 子目录
+                               #   （权重 + loss_log.json + loss_curves.png 都在里面）
+  device: cuda                 # cuda / cpu
+  seed: 0
+
+# ---------------- 推理 imagine ----------------
+imagine:
+  ckpt_dir: prism/ckpt_fb01    # 权重目录（use_latest=false 时用这个）
+  ckpt: 20                     # 用第几个 epoch 的权重
+  use_latest: true             # true = 自动用"最新一次训练"的权重（推荐）
+  out_root: prism/runs         # 每次推理生成 imagine_<时间戳> 子目录，所有结果都收进去
+  context: 8                   # 前几帧用于建立记忆（observe）
+  horizon: 20                  # 往前想象多少步
+  seq: 48                      # 取多长的序列（48 = observe 覆盖 22 帧 + 未来 20 步，刚好够；
+                               #   若设 32，observe 占 22 帧后只剩 10 帧可想象，horizon 会被裁到 10）
+
+  # ===== observe 用哪 8 帧（在这里指定，改这里即可切换）=====
+  sample_index: 57             # 验证集第几个样本（57 = 扫描出的运动量最大样本）
+  frame_stride: 3              # 每隔几帧取一帧（8 帧 × 步长 3 = 覆盖 21 帧，前后差异明显）
+  observe_dir: prism/observe_context/active   # 这 8 帧的存档文件夹（PNG + context.npz + info.csv）
+  # 想换回"静止样本 #0 连续 8 帧"就改成: sample_index: 0, frame_stride: 1
+
+  modes: [sample, mu]          # 两种模式：sample(采样) / mu(均值，无采样噪声)
+  out_png: prism/preview/imagine_real_vs_pred.png   # 三列对比图
+  out_csv: prism/preview/imagine_steps.csv           # 每步结果数据（Excel 可开）
+  out_json: prism/preview/imagine_curve.json         # 每步 MSE（JSON）
+  out_curve_png: prism/preview/imagine_curve.png     # 误差曲线图

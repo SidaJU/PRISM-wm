@@ -192,6 +192,36 @@
     </ul>
   </section>
 
+  <!-- 8 -->
+  <section>
+    <h2><span class="num">8</span>更新：重采数据 + 重训后，长程漂移已大幅改善（勘误）</h2>
+    <p>第 1–4 节的结论基于<b>旧权重</b>（用 1241 局旧数据训练的版本）。后来我们
+       <b>重采数据</b>（743 局，带位姿导出，stall 过滤掉"卡住不动"的片段）并<b>重训</b>
+       （free_bits=0.1，20 epoch），再用同样的 <code>imagine()</code> 测，结果明显变好：</p>
+
+    <table>
+      <tr><th></th><th>旧（1241 局数据训的权重）</th><th>新（743 局重采数据重训）</th></tr>
+      <tr><td>第 1 步 MSE</td><td>0.0005</td><td>0.0006</td></tr>
+      <tr><td>第 12 步</td><td><b>0.059</b>（超基线）</td><td>约 0.002</td></tr>
+      <tr><td>第 20 步</td><td><b>0.080</b>（超基线）</td><td><b>0.0042</b>（sample）/ <b>0.0022</b>（mu）</td></tr>
+      <tr><td>对比基线 0.0385</td><td>❌ 比基线差</td><td>✅ <b>远好于基线</b></td></tr>
+    </table>
+
+    <div class="ok"><b>结论修正</b>：第 6 节提出的"根本方案 —— 重采数据"方向<b>已验证有效</b>：
+      过滤掉低质量/静止片段后，模型学到了更鲁棒的动力学，20 步长程推演不再崩坏。<br>
+      当初的漂移<b>主要源于数据</b>（静止帧污染 + 运动信号弱），而不只是模型结构问题。</div>
+
+    <div class="note"><b>仍待改进</b>：val_loss 在 0.018～0.079 波动 —— 泛化稳定性仍不足，
+      需要更多样的数据（更强的 domain randomization）。</div>
+
+    <h3>现在的工具（config 驱动，改 config 后双击 bat）</h3>
+    <ul>
+      <li><code>prism/config.yaml</code> —— 训练与推理参数都在这里改</li>
+      <li><code>prism/tools/run_train.bat</code> —— 双击训练，自动出 loss 曲线</li>
+      <li><code>prism/tools/run_imagine.bat</code> —— 双击推理，自动出每步数据（CSV）+ 曲线 + 对比图</li>
+    </ul>
+  </section>
+
 </div>
 
 <script>

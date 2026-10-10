@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 · 训练迭代报告：v1（训飞）→ v2（修复）</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#fff; --ink:#22303f; --muted:#6b7c8d;
+    --line:#e4e9ef; --r:#e74c3c; --g:#27ae60; --b:#3498db;
+    --hl:#f5b041; --pp:#8e44ad; --accent:#2d7ff9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.75}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 20px 90px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 26px;margin-bottom:20px}
+  h2{font-size:19px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{display:inline-block;min-width:27px;height:27px;line-height:27px;text-align:center;
+          background:var(--accent);color:#fff;border-radius:8px;font-size:14px;margin-right:9px}
+  h3{font-size:15px;margin:20px 0 8px;color:#34495e}
+  p{color:#3c4c5c;margin:10px 0}
+  .note{background:#eef6ff;border-left:4px solid var(--accent);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .key{background:#fff8e6;border-left:4px solid var(--hl);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .warn{background:#fdecea;border-left:4px solid var(--r);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .ok{background:#eafaf1;border-left:4px solid var(--g);padding:11px 16px;border-radius:0 8px 8px 0;margin:14px 0;font-size:14px}
+  .cap{text-align:center;color:var(--muted);font-size:13px;margin-top:10px}
+  table{border-collapse:collapse;margin:12px auto;font-size:14px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 13px;text-align:left;vertical-align:top}
+  th{background:#f4f6f8;color:#34495e}
+  code{background:#f4f6f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  ul,ol{padding-left:22px;font-size:14px}
+  li{margin:6px 0}
+  img{max-width:100%;border:1px solid var(--line);border-radius:10px;display:block;margin:14px auto}
+  svg{display:block;margin:0 auto}
+  .fig{text-align:center;margin:16px 0}
+  .fig img{margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>训练迭代报告：v1（训飞）→ v2（修复）</h1>
+  <p class="sub">PRISM-WM · 两次训练的完整对比：条件 / 现象 / 数据 / 根因 / 后续路线</p>
+
+  <!-- 1 -->
+  <section>
+    <h2><span class="num">1</span>总览：两次训练的条件与结果</h2>
+    <table>
+      <tr><th></th><th>v1（训飞）</th><th>v2（修复后）</th></tr>
+      <tr><td><b>训练数据</b></td><td>1,241 局（旧采集：含大量"卡住不动"的静止片段、方块仅 2.5cm、相邻帧差异 0.0026）</td>
+          <td><b>743 局</b>（重采：stall 过滤掉静止片段、方块改青色提高可辨识度、位姿导出）</td></tr>
+      <tr><td><b>free_bits</b></td><td>0.1（KL 修复后）</td><td>0.1（不变）</td></tr>
+      <tr><td><b>训练指标</b></td><td>看似正常：KL 0.032、recon 0.0005</td><td>KL 0.100、recon 0.0006</td></tr>
+      <tr><td><b>imagine 20 步 MSE</b></td><td><b>0.080</b>（超基线 0.0385，12 步即崩）</td><td><b>0.0042</b>（远好于基线）</td></tr>
+      <tr><td><b>想象画面</b></td><td>12 步后碎成彩色噪点 ❌</td><td>20 步全程清晰 ✅</td></tr>
+    </table>
+    <div class="key"><b>两次训练唯一的实质差异是数据</b>（模型结构、free_bits、超参都相同）——
+       所以 v1→v2 的改善可以干净地归因于<b>数据质量</b>。</div>
+  </section>
+
+  <!-- 2 -->
+  <section>
+    <h2><span class="num">2</span>v1：训飞的条件与现象</h2>
+
+    <h3>当时的条件</h3>
+    <ul>
+      <li>训练数据：1,241 局（旧采集版）。事后分析发现三个问题：
+        <ol>
+          <li><b>79% 的 episode 方块被推下桌面</b>——掉落后仍继续采集，大量"方块躺在地上"的垃圾帧</li>
+          <li><b>画面几乎静止</b>：相邻帧差异仅 0.0026（机械臂移动慢 + 64×64 透视压缩）</li>
+          <li><b>方块与桌面同色</b>（灰对灰），64×64 下不可见——模型从画面里"看不到"方块</li>
+        </ol>
+      </li>
+      <li>KL 塌缩已被 free_bits 修复（KL 0.000002 → 0.032），训练指标全部正常</li>
+      <li>训练 loss 收敛看起来没问题——<b>问题隐藏在"长程推演"里，训练时根本测不到</b></li>
+    </ul>
+
+    <h3>现象：imagine 12 步后崩坏</h3>
+    <table>
+      <tr><th>step</th><th>像素 MSE（sample）</th><th>现象</th></tr>
+      <tr><td>0–4</td><td>0.00049 ~ 0.00045</td><td>✅ 与真实帧几乎无法区分</td></tr>
+      <tr><td>6</td><td>0.00214</td><td>⚠️ 白色桌面上开始出现噪点</td></tr>
+      <tr><td>9</td><td>0.00896</td><td>❌ 桌面大面积破碎</td></tr>
+      <tr><td>12</td><td><b>0.05911</b></td><td>❌ 超过基线 0.0385</td></tr>
+      <tr><td>19</td><td><b>0.07990</b></td><td>❌ 全图碎成彩色像素块</td></tr>
+    </table>
+
+    <div class="fig">
+      <img src="../preview/imagine_v1_collapse_original.jpg" alt="v1 训飞现象（原始记录）"
+           onerror="this.parentNode.innerHTML='<div style=\'padding:20px;border:1px dashed #e74c3c;border-radius:8px;color:#e74c3c\'>此处为 v1 训飞现象截图（原始 PNG 已被后续运行覆盖）。请将当时保存的手机截图复制到 prism/preview/imagine_v1_collapse_original.jpg 即可在此显示。</div>'">
+      <div class="cap">v1 现象：上排（step 0–6）尚清晰，下排（step 12+）全图碎成彩色噪点，仅绿色背景稳定</div>
+    </div>
+
+    <div class="warn"><b>注</b>：v1 的原始 PNG 已被 v2 的运行覆盖、v1 权重也在重训中被覆盖——
+      上图占位需要把<b>当时的手机截图</b>复制到
+      <code>prism/preview/imagine_v1_collapse_original.jpg</code>（文件名保持不变即可显示）。
+      v1 的<b>数值曲线</b>则完整保留在下方（来自当时记录的 20 步 MSE）。</div>
+
+    <div id="cmp"></div>
+    <div class="cap">v1（红，训飞）vs v2（绿，修复）的想象误差曲线对比 —— v1 在 step 12 穿过基线后崩坏；v2 全程在基线下方</div>
+  </section>
+
+  <!-- 3 -->
+  <section>
+    <h2><span class="num">3</span>排查：怎么定位到"数据"的</h2>
+    <ol>
+      <li><b>假设 A：prior 采样噪声</b> → 加 sample/mu 双模式开关实验 →
+          两条曲线几乎重合 → <b>否定</b>（采样噪声只是小头）</li>
+      <li><b>假设 B：decoder 对 emb 漂移敏感</b> → 图上噪点从"大面积均匀区域（桌面）"开始、
+          恒定背景不坏 → 支持：emb 漂出训练分布后，decoder 在见过的模式间随机跳变</li>
+      <li><b>追问：为什么 emb 会漂？为什么 decoder 这么脆？</b> → 回到数据：
+          静止帧污染 + 运动信号弱 + 方块不可见 → 模型只学到"特定输入→特定画面"的窄映射，
+          没有学到可纠错的动力学</li>
+      <li><b>决定性验证</b>：只换数据（重采 743 局）、其余全部不变 → v2 修复 →
+          <b>证实数据是主因</b></li>
+    </ol>
+    <div class="note">排查工具：sample/mu 双模式开关（一行代码）、逐帧误差热图、
+      render 一致性验证（相机参数）、val/train 分离检查。</div>
+  </section>
+
+  <!-- 4 -->
+  <section>
+    <h2><span class="num">4</span>v2：改了什么、结果如何</h2>
+
+    <h3>① 改了哪个文件（数据层改动全在采集脚本）</h3>
+    <p>文件：<code>prism/collect/collect_mujoco.py</code></p>
+    <table>
+      <tr><th>行号</th><th>改动</th><th>作用</th></tr>
+      <tr><td><b>98</b> / 193</td><td><code>set_object_color()</code> 及调用</td>
+          <td>方块改<b>青色</b>（原灰色与桌面同色，64×64 下不可见）</td></tr>
+      <tr><td><b>44</b> / 68</td><td><code>TABLE_X/Y</code> + 边缘刹车</td>
+          <td>方块接近桌沿就停手，不再被推下桌</td></tr>
+      <tr><td><b>346</b></td><td><code>--stall-window 20</code></td>
+          <td>连续 20 帧不动即终止 —— 过滤"卡住不动"片段</td></tr>
+      <tr><td><b>344</b></td><td><code>--drop-z 0.35</code></td>
+          <td>方块掉下桌立即终止（原来继续录垃圾帧）</td></tr>
+      <tr><td><b>343</b></td><td><code>--min-len 30</code></td><td>过短的 episode 丢弃</td></tr>
+      <tr><td><b>125</b> / <b>143</b> / <b>350</b></td>
+          <td><code>collect_geom_meta</code> / <code>collect_frame_poses</code> / <code>--export-poses</code></td>
+          <td>导出 24 个几何体的每帧世界位姿（UE5 回放用）</td></tr>
+    </table>
+
+    <h3>② 重采数据（覆盖 L0，旧数据自动备份）</h3>
+    <pre>python prism/collect/collect_mujoco.py --episodes 1200 --out prism/data/L0 --randomize --export-poses
+→ 产出 743 局（旧 1241 局自动备份为 prism/data/L0_v1）</pre>
+
+    <h3>③ 重训模型（参数与 v1 完全相同）</h3>
+    <pre>python prism/train/train_rssm.py --epochs 20 --free-bits 0.1 --out prism/ckpt_fb01</pre>
+    <div class="key"><b>关键</b>：free_bits、latent/hidden/emb、epochs、lr <b>全部与 v1 一致</b> ——
+      唯一变量就是数据，所以改善可以干净地归因于数据质量。</div>
+
+    <h3>④ 澄清：imagine 的参数没改过</h3>
+    <p>v2 <b>没有动 imagine 的任何算法参数</b> —— <code>context=8</code>、<code>horizon=20</code> 始终是 8 和 20。
+      变化的是它<b>读的数据</b>和<b>用的权重</b>：</p>
+    <pre>读 prism/data/L0 → 取验证集第一局 → 前 8 帧 observe 建立记忆 → 想象 20 步
+                        ↑ 由旧 1241 局换成重采的 743 局（模型也换成重训后的权重）</pre>
+    <p>所以那"8 帧"是<b>新数据集里的新序列</b>，不是把 context 从别的值改成 8。</p>
+
+    <h3>⑤ 新增工具（工程能力，不改算法）</h3>
+    <table>
+      <tr><th>文件</th><th>作用</th></tr>
+      <tr><td><code>prism/config.yaml</code></td><td>训练 + 推理参数集中管理（改这里后双击 bat）</td></tr>
+      <tr><td><code>prism/tools/check_poses.py</code></td><td>验证位姿与渲染帧同步（误差 0.000 mm）</td></tr>
+      <tr><td><code>prism/tools/plot_loss.py</code></td><td>画 loss 曲线 + 自动收敛判断</td></tr>
+      <tr><td><code>run_train.bat</code> / <code>run_imagine.bat</code></td><td>一键训练 / 推理（自动出图）</td></tr>
+      <tr><td><code>imagine_demo.py</code> 改造</td><td>支持 config + 每步数据导出 CSV（供分析）</td></tr>
+    </table>
+
+    <h3>训练收敛（20 epoch，free_bits=0.1）</h3>
+    <div class="fig">
+      <img src="../preview/train_loss_curves.png" alt="v2 训练曲线">
+      <div class="cap">recon 0.0067→0.0006（降 91%）；emb/proprio → 4e-5/3e-5；KL 稳定在 0.1000（free_bits 地板）</div>
+    </div>
+
+    <h3>imagine 修复（20 步全程清晰）</h3>
+    <div class="fig">
+      <img src="../preview/imagine_curve.png" alt="v2 imagine 误差曲线">
+      <div class="cap">sample 0.0006→0.0042、mu 0.0005→0.0022，全程低于基线 0.0385</div>
+    </div>
+    <div class="fig">
+      <img src="../preview/imagine_real_vs_pred.png" alt="v2 真实 vs 想象对比">
+      <div class="cap">三列（真实|采样|均值）在所有 step 几乎无差别——破碎现象消失</div>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section>
+    <h2><span class="num">5</span>数据分析：到底哪里变好了</h2>
+    <table>
+      <tr><th>指标</th><th>v1</th><th>v2</th><th>改善</th></tr>
+      <tr><td>imagine 第 20 步 MSE（sample）</td><td>0.0799</td><td>0.0042</td><td><b>19 倍</b></td></tr>
+      <tr><td>imagine 第 20 步 MSE（mu）</td><td>~0.08（估）</td><td>0.0022</td><td>—</td></tr>
+      <tr><td>超过基线的步数</td><td>第 12 步起</td><td><b>0 步</b></td><td>—</td></tr>
+      <tr><td>有效样本（无静止污染）</td><td>7,272（含大量垃圾帧）</td><td>4,356（全有效）</td><td>—</td></tr>
+      <tr><td>训练 KL（第 20 轮）</td><td>0.032（free_bits 前 0.000002）</td><td>0.100（顶在 free_bits）</td><td>—</td></tr>
+      <tr><td>训练 recon（第 20 轮）</td><td>0.0005</td><td>0.0006</td><td>相当</td></tr>
+    </table>
+    <div class="key"><b>关键洞察</b>：训练 loss（recon）两次几乎一样——
+      <b>训练指标根本预测不了长程推演的崩坏</b>。这正是"训飞"难以察觉的原因，
+      也是必须把 imagine rollout 误差纳入常规评测的理由。</div>
+  </section>
+
+  <!-- 6 -->
+  <section>
+    <h2><span class="num">6</span>后续调参 Roadmap（每轮结果回填此表）</h2>
+    <table>
+      <tr><th>版本</th><th>数据</th><th>关键改动</th><th>20 步 MSE</th><th>现象</th><th>状态</th></tr>
+      <tr><td><b>v1</b></td><td>1,241 局（旧）</td><td>free_bits=0.1</td><td>0.0799</td><td>12 步后破碎</td><td>❌</td></tr>
+      <tr><td><b>v2</b></td><td>743 局（重采）</td><td>数据清洗（青色方块/stall 过滤/掉落终止）</td><td><b>0.0042</b></td><td>20 步清晰</td><td>✅</td></tr>
+      <tr><td><b>v3 计划</b></td><td>重采（加强随机化）</td><td>摩擦/质量扰动加大 + 方块加大（2.5→4cm）+ 外力扰动</td><td>待测</td><td>—</td><td>⬜</td></tr>
+      <tr><td><b>v4 计划</b></td><td>同 v3</td><td>分辨率 64→96（方块像素↑，感知信号增强）</td><td>待测</td><td>—</td><td>⬜</td></tr>
+      <tr><td><b>v5 计划</b></td><td>同 v4</td><td>加物体位置预测头（MPC 代价不再用末端近似）</td><td>待测</td><td>—</td><td>⬜</td></tr>
+      <tr><td><b>v6 计划</b></td><td>同 v5</td><td>离散 latent（DreamerV3 方案）</td><td>待测</td><td>—</td><td>⬜</td></tr>
+    </table>
+
+    <h3>每轮评测的固定动作（写进流程）</h3>
+    <ol>
+      <li><code>run_train.bat</code> —— 训练 + 自动 loss 曲线（4 项分解，判断训练收敛）</li>
+      <li><code>run_imagine.bat</code> —— imagine 20 步 + 自动每步数据（CSV）与误差曲线（判断长程）</li>
+      <li>对比基线 0.0385 与上一版 —— <b>20 步 MSE 低于基线 = 及格；低于上一版 = 改进</b></li>
+      <li>结果回填上面的 Roadmap 表</li>
+    </ol>
+
+    <div class="warn"><b>警戒线（写死在流程里）</b>：
+      ① 训练 recon 不下降 → 数据/超参有问题；
+      ② KL 塌到 0.001 以下 → 塌缩复发；
+      ③ imagine 20 步 MSE 超基线 → <b>即使训练 loss 再好看也不算收敛</b>（v1 的教训）。</div>
+
+    <h3>当前遗留问题（下一轮优先）</h3>
+    <ul>
+      <li><b>val_loss 波动大</b>（0.019~0.079）—— 泛化不稳，v3 的随机化应能缓解</li>
+      <li><b>MPC 成功率 0%</b> —— 代价函数用"末端到目标"是间接代理，v5 加物体位置头后应改善</li>
+      <li><b>L1（UE5）背景偏黑</b> —— 背景幕 + LightScale 调参未完成（不影响 WM 主线）</li>
+    </ul>
+  </section>
+
+  <!-- 7 -->
+  <section>
+    <h2><span class="num">7</span>当前状态：loss 分析与 free_bits 对照实验</h2>
+
+    <h3>① 训练 loss 的量级失衡（关键发现）</h3>
+    <p>用 <code>eval_curve.py</code> 测"真实 KL"（调用 loss 时不带 free_bits，不受地板掩盖）：</p>
+    <table>
+      <tr><th>分量</th><th>ep20 真实值</th><th>说明</th></tr>
+      <tr><td><b>kl(真实)</b></td><td>0.020</td><td>占总 loss 约 <b>95%</b> —— 绝对主导项</td></tr>
+      <tr><td>recon</td><td>0.0006</td><td>比 KL 小 <b>30 倍</b></td></tr>
+      <tr><td>emb</td><td>0.00004</td><td>比 KL 小 <b>500 倍</b>（早期就饱和到 1e-5，不再提供梯度）</td></tr>
+      <tr><td>proprio</td><td>0.00003</td><td>同上，早饱和</td></tr>
+    </table>
+    <div class="warn"><b>两个"陷阱"</b>：
+      ① 训练日志里 kl 恒为 <b>0.10000</b> 是假象 —— 真实 KL 只有 0.02~0.067（被地板 0.1 顶住显示）；
+      ② 看<b>总 loss</b> 没有意义（它≈KL 常数），判断训练进展要看 recon/emb/proprio 分量。</div>
+
+    <h3>② free_bits 对照实验（只改这一个参数）</h3>
+    <p>出于"KL 项梯度被地板吃掉、prior 没被训练"的假设，做了 free_bits 0.1 → 0.01 的重训对照：</p>
+    <table>
+      <tr><th>free_bits</th><th>真实 KL</th><th>训练总 loss</th><th>val_loss</th><th>第20步想象 MSE</th><th>结论</th></tr>
+      <tr><td><b>0.1</b></td><td>0.020</td><td>0.1007</td><td>0.019~0.079（波动）</td><td><b>0.0049 ✅</b></td><td>✅ 更好</td></tr>
+      <tr><td>0.01</td><td><b>0.006</b></td><td>0.0106</td><td>0.005~0.008（更稳）</td><td><b>0.0509 ❌</b></td><td>❌ 更差</td></tr>
+    </table>
+    <div class="warn"><b>阴性结果</b>：降低 free_bits 确实让 KL 恢复梯度（val_loss 更低更稳：0.005~0.008），
+      但真实 KL 被压到 0.006 → <b>z 承载的信息减少</b> → 长程想象反而退化（0.0049 → 0.0509，差 10 倍）。</div>
+    <div class="ok"><b>结论与决策</b>：<b>KL 不是越低越好</b> —— 需要保留一定的 KL（z 有信息）才能想象得好。
+      已 <b>revert 回 free_bits=0.1</b>，并在 config 里注明"勿再调低"。</div>
+
+    <h3>③ 当前"看起来好"的指标与真实问题</h3>
+    <table>
+      <tr><th>指标</th><th>表现</th><th>可信度</th></tr>
+      <tr><td>训练收敛（recon↓、KL 稳）</td><td>✅ 好</td><td>可信</td></tr>
+      <tr><td>像素 MSE（imagine 20 步 0.0049）</td><td>✅ 好</td><td>⚠️ <b>对"物体动力学"是盲的</b> —— 方块仅 1px，位置误差被背景淹没（见下）</td></tr>
+      <tr><td>物体动力学（方块会往哪走）</td><td>❌ 没学到</td><td>真实缺陷（观察：真实物体动了 6cm，想象画面方块不动）</td></tr>
+    </table>
+    <div class="warn"><b>根本问题</b>：方块在 64×64 里不到 1 个像素 → 它的运动在 loss 里几乎不贡献梯度 →
+      模型没有动力学学习信号。<b>像素 MSE 无法衡量这一点</b>，必须引入"物体位置误差"指标（v5）。</div>
+
+    <h3>④ 下一步（按此顺序）</h3>
+    <ol>
+      <li><b>v5：物体位置预测头</b>（从 h,z 预测方块 xyz）+ 把"物体位置误差"作为评测指标 —— 让"难而重要"的梯度进来，也是唯一能验证"学会物体动力学"的尺子</li>
+      <li>v3/v4：方块加大（2.5→4cm）+ 分辨率 64→96 —— 让物体在画面里可见</li>
+      <li>继续用 <code>eval_curve.py</code> 监控<b>真实 KL</b>（不被地板掩盖），警戒线：KL &lt; 0.001 = 塌缩；KL &lt; 0.01 = 信息过少（想象会退化）</li>
+    </ol>
+  </section>
+
+</div>
+
+<script>
+/* ============ v1 vs v2 误差曲线对比 ============ */
+(function(){
+  const v1 = [0.000494,0.000427,0.000437,0.000537,0.000450,0.000822,0.002138,0.004538,
+              0.008957,0.016509,0.029333,0.044812,0.059115,0.067421,0.072518,0.074916,
+              0.076443,0.078644,0.079242,0.079902];
+  const v2s = [0.0005976882,0.0006823847,0.0014609114,0.0012356611,0.0024731883,0.0016987752,
+               0.0018849127,0.0026298927,0.0028525470,0.0030996159,0.0032357431,0.0032778869,
+               0.0032099627,0.0034284729,0.0034656667,0.0035290269,0.0038088840,0.0039390251,
+               0.0041035451,0.0041641248];
+  const v2m = [0.0005411665,0.0008320042,0.0011041966,0.0013551390,0.0013138127,0.0012716457,
+               0.0014484148,0.0016164199,0.0016485875,0.0017988076,0.0016598656,0.0013343440,
+               0.0013922766,0.0013711754,0.0012152719,0.0011355892,0.0016334116,0.0015803914,
+               0.0016732309,0.0021543617];
+  const baseline = 0.03848;
+  const H = v1.length;
+
+  const W = 920, Hgt = 340;
+  const L = 70, R = 20, T = 30, B = 55;
+  const pw = W - L - R, ph = Hgt - T - B;
+  const ymax = 0.085;
+  const X = t => L + (t / (H - 1)) * pw;
+  const Y = v => T + ph - (v / ymax) * ph;
+
+  let s = `<svg viewBox="0 0 ${W} ${Hgt}" width="100%" style="max-width:920px">`;
+  s += `<defs><marker id="a10" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+
+  // 网格 + y 刻度
+  for (let i = 0; i <= 5; ++i) {
+    const v = ymax * i / 5, y = Y(v);
+    s += `<line x1="${L}" y1="${y}" x2="${L+pw}" y2="${y}" stroke="#e4e9ef" stroke-width="1"/>`;
+    s += `<text x="${L-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#6b7c8d">${v.toFixed(3)}</text>`;
+  }
+  for (let t = 0; t < H; t += 2) {
+    s += `<text x="${X(t)}" y="${T+ph+18}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t}</text>`;
+  }
+  s += `<text x="${L+pw/2}" y="${Hgt-10}" text-anchor="middle" font-size="12" fill="#34495e">想象步数</text>`;
+
+  // 基线
+  s += `<line x1="${L}" y1="${Y(baseline)}" x2="${L+pw}" y2="${Y(baseline)}" stroke="#95a5a6"
+         stroke-width="2" stroke-dasharray="7,5"/>`;
+  s += `<text x="${L+pw-6}" y="${Y(baseline)-7}" text-anchor="end" font-size="11" fill="#7f8c8d">基线 0.0385</text>`;
+
+  // 崩坏区域标注
+  s += `<rect x="${X(10)}" y="${T}" width="${X(19)-X(10)}" height="${ph}" fill="#fdecea" opacity=".5"/>`;
+  s += `<text x="${(X(10)+X(19))/2}" y="${T+18}" text-anchor="middle" font-size="12" fill="#c0392b">v1 崩坏区（超基线）</text>`;
+
+  const path = arr => arr.map((v, t) => `${t ? 'L' : 'M'}${X(t).toFixed(1)},${Y(Math.min(v, ymax)).toFixed(1)}`).join(' ');
+  s += `<path d="${path(v1)}" fill="none" stroke="#e74c3c" stroke-width="3"/>`;
+  s += `<path d="${path(v2s)}" fill="none" stroke="#27ae60" stroke-width="3"/>`;
+  s += `<path d="${path(v2m)}" fill="none" stroke="#3498db" stroke-width="2" stroke-dasharray="5,4"/>`;
+
+  // 图例
+  s += `<rect x="${L+12}" y="${T+10}" width="16" height="4" fill="#e74c3c"/>`;
+  s += `<text x="${L+34}" y="${T+15}" font-size="12" fill="#22303f">v1（旧数据，训飞）</text>`;
+  s += `<rect x="${L+12}" y="${T+30}" width="16" height="4" fill="#27ae60"/>`;
+  s += `<text x="${L+34}" y="${T+35}" font-size="12" fill="#22303f">v2 sample（重采数据）</text>`;
+  s += `<rect x="${L+12}" y="${T+50}" width="16" height="4" fill="#3498db"/>`;
+  s += `<text x="${L+34}" y="${T+55}" font-size="12" fill="#22303f">v2 mu（均值推演）</text>`;
+
+  s += `</svg>`;
+  document.getElementById('cmp').innerHTML = s;
+})();
+</script>
+</body>
+</html>
