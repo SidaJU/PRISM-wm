@@ -27,7 +27,9 @@ def to_seq_batch(batch, device):
     images = batch['images'].to(device).permute(1, 0, 2, 3, 4).contiguous()
     proprio = batch['proprio'].to(device).permute(1, 0, 2).contiguous()
     actions = batch['actions'].to(device).permute(1, 0, 2).contiguous()
-    return images, proprio, actions
+    # v5：物体位置真值 (T,B,3)，作为预测目标传入 loss
+    obj_pos = batch['object_pos'].to(device).permute(1, 0, 2).contiguous()
+    return images, proprio, actions, obj_pos
 
 
 def main():
@@ -47,6 +49,8 @@ def main():
     ap.add_argument('--out', default=None)
     ap.add_argument('--device', default=None)
     ap.add_argument('--seed', type=int, default=None)
+    ap.add_argument('--object-weight', type=float, default=None,
+                    help='v5 物体位置预测 loss 的权重')
     ap.add_argument('--loss-log', default=None,
                     help='每个 epoch 的各项 loss 记录（JSON），默认写到 --out/loss_log.json')
     args = ap.parse_args()
@@ -71,7 +75,7 @@ def main():
         'data': str(ROOT / 'prism/data/L0'),
         'epochs': 10, 'batch': 16, 'seq': 32, 'lr': 1e-3,
         'latent': 32, 'hidden': 200, 'emb': 256,
-        'kl_weight': 1.0, 'free_bits': 0.0,
+        'kl_weight': 1.0, 'free_bits': 0.0, 'object_weight': 1.0,
         'out': str(ROOT / 'prism/ckpt'),
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'seed': 0,
@@ -119,11 +123,12 @@ def main():
         t0 = time.time()
         agg = {}
         for batch in dl:
-            images, proprio, actions = to_seq_batch(batch, device)
+            images, proprio, actions, obj_pos = to_seq_batch(batch, device)
             opt.zero_grad()
             out = model(images, proprio, actions)
             losses = rssm_loss(out, images, proprio, kl_weight=args.kl_weight,
-                               free_bits=args.free_bits)
+                               free_bits=args.free_bits, object_pos=obj_pos,
+                               object_weight=args.object_weight)
             losses['loss'].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -143,9 +148,10 @@ def main():
             with torch.no_grad():
                 val_loss = 0.0
                 for batch in dl_val:
-                    images, proprio, actions = to_seq_batch(batch, device)
+                    images, proprio, actions, obj_pos = to_seq_batch(batch, device)
                     out = model(images, proprio, actions)
-                    l = rssm_loss(out, images, proprio, kl_weight=args.kl_weight)
+                    l = rssm_loss(out, images, proprio, kl_weight=args.kl_weight,
+                                  object_pos=obj_pos, object_weight=args.object_weight)
                     val_loss += float(l['loss'])
                 val_loss = val_loss / max(1, len(dl_val))
                 row['val'] = val_loss

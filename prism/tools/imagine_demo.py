@@ -150,20 +150,24 @@ def main():
 
     real = images[start_future:start_future + H, 0].cpu().numpy()
     modes = list(args.modes)
-    pred, prop = {}, {}
+    pred, prop, objp = {}, {}, {}
     with torch.no_grad():
         for m in modes:
-            emb_hat, prop_hat = model.imagine(h.clone(), z.clone(), fut_act, obs_pro[-1], H,
-                                              sample=(m != 'mu'))
+            emb_hat, prop_hat, obj_hat = model.imagine(h.clone(), z.clone(), fut_act, obs_pro[-1], H,
+                                                       sample=(m != 'mu'))
             img_hat = model.decoder(emb_hat.reshape(H, -1)).reshape(H, 1, 3, 64, 64)
             pred[m] = img_hat[:, 0].cpu().numpy()
             prop[m] = prop_hat[:, 0].cpu().numpy()
+            objp[m] = obj_hat[:, 0].cpu().numpy()      # v5：想象的物体位置 (H,3)
 
     mse = {m: [float(((pred[m][t] - real[t]) ** 2).mean()) for t in range(H)] for m in modes}
     baseline = float(((real.mean(axis=(0, 1, 2)) - real) ** 2).mean())
 
     # ---------- 每步 CSV ----------
     real_prop = proprio[start_future:start_future + H, 0].cpu().numpy()
+    # v5：真实物体位置（评测"模型有没有学会推物体"的关键）
+    real_obj = s['object_pos'][start_future:start_future + H].cpu().numpy() \
+        if 'object_pos' in s else np.zeros((H, 3), dtype=np.float32)
     rows = []
     for t in range(H):
         r = {'step': t}
@@ -173,6 +177,11 @@ def main():
         r['grip_real_x'], r['grip_real_y'], r['grip_real_z'] = float(rp[0]), float(rp[1]), float(rp[2])
         r['grip_pred_x'], r['grip_pred_y'], r['grip_pred_z'] = float(pp[0]), float(pp[1]), float(pp[2])
         r['grip_err'] = float(np.linalg.norm(pp[0:3] - rp[0:3]))
+        # 物体位置（真实 vs 想象）
+        ro, po = real_obj[t], objp[modes[0]][t]
+        r['obj_real_x'], r['obj_real_y'], r['obj_real_z'] = float(ro[0]), float(ro[1]), float(ro[2])
+        r['obj_pred_x'], r['obj_pred_y'], r['obj_pred_z'] = float(po[0]), float(po[1]), float(po[2])
+        r['obj_err'] = float(np.linalg.norm(po[0:3] - ro[0:3]))
         rows.append(r)
 
     csv_path = run_dir / 'steps.csv'

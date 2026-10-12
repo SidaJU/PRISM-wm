@@ -19,6 +19,7 @@ train:
   hidden: 200                  # h 维度
   emb: 256                     # emb 维度
   kl_weight: 1.0               # KL 在 loss 中的权重
+  object_weight: 1.0           # v5：物体位置预测 loss 权重（逼 z 装载物体位置信息）
   free_bits: 0.1               # KL 下限（baseline，勿改）。0.1 与 0.01 的完整对照实验结论：
                                #   0.1  → 真实 KL 0.067→0.020 → 想象位置误差 21cm（静止基线 8cm 的 2.6×）
                                #   0.01 → 真实 KL 0.006→0.005 → 想象位置误差 110cm（16.4×，发散）

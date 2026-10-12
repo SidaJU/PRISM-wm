@@ -79,6 +79,9 @@ class RSSM(nn.Module):
         # 由 (h, z) 预测下一帧的观测嵌入与本体增量
         self.obs_pred = nn.Linear(hidden_dim + latent_dim, emb_dim)
         self.proprio_pred = nn.Linear(hidden_dim + latent_dim, proprio_dim)
+        # v5：物体位置预测头。从 (h,z) 直接预测物体 xyz —— 逼 z 装载"物体在哪"的信息，
+        # 提供"难而重要"的梯度（当前 emb/proprio 早期就饱和到 1e-5，后期几乎无梯度）。
+        self.object_pred = nn.Linear(hidden_dim + latent_dim, 3)
 
     @staticmethod
     def _rsample(mu, logvar):
@@ -100,7 +103,7 @@ class RSSM(nn.Module):
 
         h, z = state if state is not None else self.init_state(B, device)
 
-        outs = {'emb': [], 'emb_pred': [], 'proprio_pred': [], 'kl': []}
+        outs = {'emb': [], 'emb_pred': [], 'proprio_pred': [], 'object_pred': [], 'kl': []}
         kls = []
         for t in range(T):
             gru_in = torch.cat([z, actions[t], proprio[t]], dim=-1)
@@ -120,11 +123,13 @@ class RSSM(nn.Module):
             hz = torch.cat([h, z], dim=-1)
             outs['emb_pred'].append(self.obs_pred(hz))
             outs['proprio_pred'].append(self.proprio_pred(hz))
+            outs['object_pred'].append(self.object_pred(hz))
 
         out = {
             'emb': emb,                                        # (T,B,E) 真实观测嵌入
             'emb_pred': torch.stack(outs['emb_pred']),          # (T,B,E) 预测
             'proprio_pred': torch.stack(outs['proprio_pred']),  # (T,B,P)
+            'object_pred': torch.stack(outs['object_pred']),     # (T,B,3) 预测的物体 xyz
             'kl': torch.stack(kls),                             # (T,B)
         }
         # 图像重建只解码最后一帧太浪费，这里解码全部帧（T*B 一次前向）
@@ -168,8 +173,9 @@ class RSSM(nn.Module):
         ----
         emb_pred : (horizon, B, E) 想象出的画面摘要（可送 decoder 得到想象画面）
         prop_pred: (horizon, B, P) 想象出的本体
+        obj_pred : (horizon, B, 3) 想象出的物体位置（v5）
         """
-        emb_hats, prop_hats = [], []
+        emb_hats, prop_hats, obj_hats = [], [], []
         for t in range(horizon):
             # 1) 用上一步的 z 和本体推进记忆
             gru_in = torch.cat([z, actions[t], proprio], dim=-1)
@@ -184,16 +190,24 @@ class RSSM(nn.Module):
             emb_hats.append(self.obs_pred(hz))
             proprio = self.proprio_pred(hz)      # 下一步用自己预测的本体
             prop_hats.append(proprio)
+            obj_hats.append(self.object_pred(hz))   # v5：想象的物体位置
 
-        return torch.stack(emb_hats), torch.stack(prop_hats)
+        return torch.stack(emb_hats), torch.stack(prop_hats), torch.stack(obj_hats)
 
 
 def rssm_loss(out, images, proprio, kl_weight=1.0, emb_weight=1.0,
-              recon_weight=1.0, proprio_weight=1.0, free_bits=0.0):
+              recon_weight=1.0, proprio_weight=1.0, free_bits=0.0,
+              object_pos=None, object_weight=1.0):
+    """object_pos: (T,B,3) 物体位置真值（监督目标，不是模型输入）。
+    给了它就会多一项 object_mse —— 这是 v5 逼 z 装载物体信息的关键。"""
     T, B = images.shape[0], images.shape[1]
     recon = torch.mean((out['recon'] - images) ** 2)
     emb_mse = torch.mean((out['emb_pred'] - out['emb'].detach()) ** 2)
     proprio_mse = torch.mean((out['proprio_pred'] - proprio) ** 2)
+
+    # v5：物体位置预测误差（单位：米²；典型值 1e-4 量级）
+    object_mse = (torch.mean((out['object_pred'] - object_pos) ** 2)
+                  if object_pos is not None else torch.zeros((), device=images.device))
 
     kl = out['kl']
     if free_bits > 0:      # 防止 posterior collapse
@@ -201,8 +215,10 @@ def rssm_loss(out, images, proprio, kl_weight=1.0, emb_weight=1.0,
     kl = torch.mean(kl)
 
     total = (recon_weight * recon + emb_weight * emb_mse
-             + proprio_weight * proprio_mse + kl_weight * kl)
+             + proprio_weight * proprio_mse + kl_weight * kl
+             + object_weight * object_mse)
     return {
         'loss': total, 'recon': recon.detach(), 'emb': emb_mse.detach(),
         'proprio': proprio_mse.detach(), 'kl': kl.detach(),
+        'object': object_mse.detach(),
     }

@@ -53,7 +53,14 @@ class L0Dataset(Dataset):
             proprio = d['proprio'][s:s + self.seq_len]     # (T,10)
             act = d['actions'][s:s + self.seq_len]         # (T,4)
 
+        # v5：物体位置真值。它是「预测目标（监督信号）」，不是模型输入 ——
+        # 与"obs/ gt 物理分离防泄漏"不冲突：模型依然看不到它，只能从图像里推断。
+        gt_path = f.parent.parent / 'gt' / f.name
+        with np.load(gt_path) as g:
+            obj = g['object_state'][s:s + self.seq_len, 0:3].astype(np.float32)  # (T,3)
+
         x = torch.from_numpy(img).float().permute(0, 3, 1, 2) / 255.0            # (T,3,H,W)
         p = torch.from_numpy(proprio).float()
         a = torch.from_numpy(act).float()
-        return {'images': x, 'proprio': p, 'actions': a}
+        return {'images': x, 'proprio': p, 'actions': a,
+                'object_pos': torch.from_numpy(obj)}
