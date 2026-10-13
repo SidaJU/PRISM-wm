@@ -55,6 +55,8 @@ def build_args():
     ap.add_argument('--use-latest', default=None)
     ap.add_argument('--out-root', default=None)
     ap.add_argument('--modes', nargs='+', default=None)
+    ap.add_argument('--data', default=None, help='数据集目录（默认 prism/data/L0；'
+                                                 '复现旧实验可指定 prism/data/L0_v1）')
     args = ap.parse_args()
 
     cfg = {}
@@ -103,12 +105,19 @@ def main():
     ca = ckpt['args']
     model = RSSM(latent_dim=ca.get('latent', 32), hidden_dim=ca.get('hidden', 200),
                  emb_dim=ca.get('emb', 256)).to(device)
-    model.load_state_dict(ckpt['model'])
+    # strict=False：兼容 v5 之前训的旧权重（它们没有 object_pred 层）。
+    # 缺失的 object_pred 会用随机初始化 —— 这类权重的物体位置预测无意义，
+    # 但末端/画面等其它能力仍是真实的，可用于对照。
+    missing, unexpected = model.load_state_dict(ckpt['model'], strict=False)
+    if missing:
+        print(f'  [兼容] 该权重缺少层（随机初始化）: {list(missing)}')
+        print('          → 说明这是 v5 之前的旧权重，其物体位置预测不可用')
     model.eval()
     print(f'已加载 {ckpt_path.name}   device={device}')
 
     # ---------- 数据 ----------
-    ds = L0Dataset(str(ROOT / 'prism/data/L0'), seq_len=int(args.seq), train=False)
+    data_dir = args.data or 'prism/data/L0'
+    ds = L0Dataset(str(ROOT / data_dir), seq_len=int(args.seq), train=False)
     si = int(args.sample_index)
     if si >= len(ds):
         print(f'[warn] sample_index={si} 超出范围（验证集 {len(ds)} 个），改用 0')

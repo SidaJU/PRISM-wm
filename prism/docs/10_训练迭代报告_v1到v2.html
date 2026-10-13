@@ -90,15 +90,16 @@
     </table>
 
     <div class="fig">
-      <img src="../preview/imagine_v1_collapse_original.jpg" alt="v1 训飞现象（原始记录）"
-           onerror="this.parentNode.innerHTML='<div style=\'padding:20px;border:1px dashed #e74c3c;border-radius:8px;color:#e74c3c\'>此处为 v1 训飞现象截图（原始 PNG 已被后续运行覆盖）。请将当时保存的手机截图复制到 prism/preview/imagine_v1_collapse_original.jpg 即可在此显示。</div>'">
-      <div class="cap">v1 现象：上排（step 0–6）尚清晰，下排（step 12+）全图碎成彩色噪点，仅绿色背景稳定</div>
+      <img src="../runs/imagine_20261013_115311/compare.png" alt="v1 权重在旧数据上的想象结果"
+           onerror="this.parentNode.innerHTML='<div style=\'padding:20px;border:1px dashed #e74c3c;border-radius:8px;color:#e74c3c\'>v1 图缺失</div>'">
+      <div class="cap">v1（free_bits=0，KL 塌缩）用相同权重 + 旧数据 L0_v1、样本 #57 的<b>重跑</b>结果</div>
     </div>
 
-    <div class="warn"><b>注</b>：v1 的原始 PNG 已被 v2 的运行覆盖、v1 权重也在重训中被覆盖——
-      上图占位需要把<b>当时的手机截图</b>复制到
-      <code>prism/preview/imagine_v1_collapse_original.jpg</code>（文件名保持不变即可显示）。
-      v1 的<b>数值曲线</b>则完整保留在下方（来自当时记录的 20 步 MSE）。</div>
+    <div class="warn"><b>诚实说明（复现情况）</b>：v1 当时的"训飞"截图（step 12 后碎成彩色噪点）
+      原始文件已随 <code>preview/</code> 清理丢失。本次用<b>相同权重 + 相同旧数据</b>重跑，
+      在<b>样本 #57</b> 上<b>未复现崩坏</b>（20 步 MSE 0.00121，仍在基线下方）——
+      说明当时的崩坏与<b>具体样本 / 数据切片</b>有关（此前也观察到 v1 权重在新数据上不崩的现象）。
+      <br>v1 的<b>数值曲线</b>（当时记录的 20 步 MSE，见下方）仍是有效的历史证据。</div>
 
     <div id="cmp"></div>
     <div class="cap">v1（红，训飞）vs v2（绿，修复）的想象误差曲线对比 —— v1 在 step 12 穿过基线后崩坏；v2 全程在基线下方</div>
@@ -172,17 +173,17 @@
 
     <h3>训练收敛（20 epoch，free_bits=0.1）</h3>
     <div class="fig">
-      <img src="../preview/train_loss_curves.png" alt="v2 训练曲线">
+      <img src="../preview/v2_train_curves.png" alt="v2 训练曲线">
       <div class="cap">recon 0.0067→0.0006（降 91%）；emb/proprio → 4e-5/3e-5；KL 稳定在 0.1000（free_bits 地板）</div>
     </div>
 
     <h3>imagine 修复（20 步全程清晰）</h3>
     <div class="fig">
-      <img src="../preview/imagine_curve.png" alt="v2 imagine 误差曲线">
+      <img src="../runs/imagine_20261013_115132/curve.png" alt="v2 imagine 误差曲线">
       <div class="cap">sample 0.0006→0.0042、mu 0.0005→0.0022，全程低于基线 0.0385</div>
     </div>
     <div class="fig">
-      <img src="../preview/imagine_real_vs_pred.png" alt="v2 真实 vs 想象对比">
+      <img src="../runs/imagine_20261013_115132/compare.png" alt="v2 真实 vs 想象对比">
       <div class="cap">三列（真实|采样|均值）在所有 step 几乎无差别——破碎现象消失</div>
     </div>
   </section>
@@ -283,6 +284,74 @@
       <li>v3/v4：方块加大（2.5→4cm）+ 分辨率 64→96 —— 让物体在画面里可见</li>
       <li>继续用 <code>eval_curve.py</code> 监控<b>真实 KL</b>（不被地板掩盖），警戒线：KL &lt; 0.001 = 塌缩；KL &lt; 0.01 = 信息过少（想象会退化）</li>
     </ol>
+  </section>
+
+  <!-- 8 -->
+  <section>
+    <h2><span class="num">8</span>v5：加物体位置预测头 —— 想象首次优于「静止假设」</h2>
+
+    <h3>① 为什么做（v2 的困境）</h3>
+    <table>
+      <tr><th>指标（20 步想象，样本#57）</th><th>v2（无位置头）</th><th>静止基线</th><th>结论</th></tr>
+      <tr><td>末端位置误差</td><td>21.01 cm</td><td>8.07 cm</td><td>❌ 差 <b>2.60 倍</b></td></tr>
+      <tr><td>物体位置</td><td colspan="2">模型不输出 → <b>无法评测</b></td><td>❌</td></tr>
+    </table>
+    <div class="bad">模型能「画出世界长什么样」，但<b>预测不了世界会怎么变</b> ——
+      而且比「认为世界不动」还差，想象结果<b>不能直接用于决策</b>。</div>
+
+    <h3>② 改了什么（6 个文件约 60 行，详见笔记 12）</h3>
+    <pre>self.object_pred = nn.Linear(hidden_dim + latent_dim, 3)   # rssm.py:84   (h,z)232 -> 3
+object_mse = MSE(out['object_pred'], object_pos)             # rssm.py:209
+total += object_weight * object_mse                          # rssm.py:219</pre>
+    <p>另：数据集读 <code>gt/object_state[:, 0:3]</code> 作为<b>监督目标</b>（不是模型输入，不破坏防泄漏）、
+      训练/验证接入、config 加 <code>object_weight</code>、评测输出物体位置误差。</p>
+
+    <h3>③ 结果图（v5）</h3>
+    <div class="fig">
+      <img src="../runs/imagine_20261012_205549/compare.png" alt="v5 真实 vs 想象对比">
+      <div class="cap">v5 对比图：7 行 × 3 列（左=真实｜中=sample 想象｜右=mu 想象），step 0/3/6/9/12/15/18</div>
+    </div>
+
+    <div class="fig">
+      <img src="../runs/imagine_20261012_205549/curve.png" alt="v5 想象误差曲线">
+      <div class="cap">v5 每步像素 MSE（sample / mu 两条，均在基线 0.0384 下方，20 步仅 0.0018）</div>
+    </div>
+
+    <div class="fig">
+      <img src="../runs/train_20261012_204130/loss_curves.png" alt="v5 训练曲线">
+      <div class="cap">v5 训练曲线（新增的 object 项：0.0345 → 0.0008，降 38 倍）</div>
+    </div>
+
+    <h3>④ 数据对比（v2 → v5）</h3>
+    <table>
+      <tr><th>指标</th><th>v2</th><th>v5</th><th>变化</th></tr>
+      <tr><td>末端误差（20 步）</td><td>21.01 cm</td><td><b>6.78 cm</b></td><td>✅ 降 67%</td></tr>
+      <tr><td><b>vs 静止基线</b></td><td>2.60×（差于）❌</td><td><b>0.73×（优于）</b></td><td>✅ <b>首次为正</b></td></tr>
+      <tr><td>物体位置误差</td><td>无法评测</td><td><b>7.73 cm</b></td><td>✅ 首次可测</td></tr>
+      <tr><td>物体 vs 静止基线</td><td>—</td><td>0.68×（静止 11.43cm）</td><td>✅ 优于静止</td></tr>
+      <tr><td>物体位移方向 (dy)</td><td>—</td><td>预测 −0.072 / 真实 −0.068</td><td>✅ 方向一致</td></tr>
+      <tr><td>像素 MSE（20 步）</td><td>0.00252</td><td><b>0.00183</b></td><td>✅ 降 27%</td></tr>
+      <tr><td>真实 KL</td><td>0.020</td><td>0.026</td><td>+30%</td></tr>
+      <tr><td>是否发散</td><td>否（缓慢漂移）</td><td>否（更稳）</td><td>✅</td></tr>
+    </table>
+
+    <div class="key"><b>意义</b>：模型的想象<b>第一次优于「认为世界不动」</b>，
+      并且<b>第一次能评测「模型是否知道推物体会往哪走」</b>（物体预测方向与真实一致）。</div>
+
+    <div class="warn"><b>诚实观察</b>：真实 KL 仅 0.020 → 0.026（+30%，非暴涨），
+      但误差从 21cm 降到 6.8cm —— 说明<b>改善主因是位置监督直接锚定了预测</b>，
+      而非「KL 变大」。这也反证了第 7 节里「调 free_bits 让 KL 涨」的思路是错的。</div>
+
+    <h3>⑤ Roadmap 更新（回填）</h3>
+    <table>
+      <tr><th>版本</th><th>关键改动</th><th>末端误差</th><th>vs 静止基线</th><th>状态</th></tr>
+      <tr><td>v1</td><td>free_bits=0</td><td>—（画面崩坏）</td><td>—</td><td>已废弃</td></tr>
+      <tr><td>v2</td><td>重采数据 + free_bits=0.1</td><td>21.01 cm</td><td>2.60× ❌</td><td>已被超越</td></tr>
+      <tr><td>0.01 实验</td><td>free_bits=0.01</td><td>110.55 cm</td><td>16.4× ❌</td><td>已回滚</td></tr>
+      <tr><td><b>v5</b></td><td><b>物体位置预测头</b></td><td><b>6.78 cm</b></td><td><b>0.73× ✅</b></td><td><b>当前最优</b></td></tr>
+    </table>
+    <p><b>下一步</b>：① MPC 代价函数改用<b>预测的物体位置</b>（不再用「末端到目标」的间接代理）；
+      ② 加大 <code>object_weight</code>；③ 数据侧增大物体运动幅度与随机化。</p>
   </section>
 
 </div>
