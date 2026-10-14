@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>高斯分布与采样：z = mu + std × 噪声 怎么理解</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1000px;margin:0 auto;padding:28px 22px;line-height:1.75;color:#22303f;background:#fbfcfd}
+  h1{font-size:25px;border-bottom:3px solid #8e44ad;padding-bottom:10px;margin-bottom:6px}
+  .sub{color:#6b7c8d;font-size:14px;margin-top:0}
+  h2{font-size:19px;margin-top:34px;padding:7px 0 7px 12px;border-left:5px solid #8e44ad;background:#f7f4ff}
+  h3{font-size:16px;margin-top:22px;color:#34495e}
+  .num{display:inline-block;width:26px;height:26px;line-height:26px;text-align:center;background:#8e44ad;color:#fff;border-radius:50%;font-size:14px;margin-right:8px}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid #e1e8ef;padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#f4f7fa;font-weight:600}
+  code{background:#f0f3f7;padding:1px 5px;border-radius:3px;font-size:13px}
+  pre{background:#2d3748;color:#e6edf3;padding:12px 15px;border-radius:7px;overflow-x:auto;font-size:13px;line-height:1.6;margin:8px 0}
+  .cap{text-align:center;color:#6b7c8d;font-size:13px;margin-top:6px}
+  .key{background:#eafaf1;border-left:4px solid #27ae60;padding:11px 15px;margin:14px 0;border-radius:0 6px 6px 0}
+  .warn{background:#fff8e6;border-left:4px solid #f5b041;padding:11px 15px;margin:14px 0;border-radius:0 6px 6px 0}
+  .note{background:#e8f2ff;border-left:4px solid #2d7ff9;padding:11px 15px;margin:14px 0;border-radius:0 6px 6px 0}
+  .fig{border:1px solid #e1e8ef;border-radius:8px;padding:10px;margin:14px 0;background:#fff}
+  .hl{background:#c8f2dc;color:#14532d;padding:1px 5px;border-radius:3px;font-weight:bold}
+</style>
+</head>
+<body>
+
+<h1>高斯分布与采样：z = mu + std × 噪声</h1>
+<p class="sub">PRISM-WM 笔记 13 · 图解 posterior/prior 输出的"分布"以及 z 是怎么采出来的</p>
+
+<div class="key"><b>一句话</b>：网络输出的<b>不是 z</b>，而是一个<b>高斯分布</b>（mu 中心 + std 宽度）；
+<code>z = mu + std × 噪声</code> 是从这个分布里<b>随机抽一个点</b>作为本次实际使用的状态。</div>
+
+<h2><span class="num">1</span>先看清：网络输出什么</h2>
+<pre>post = self.post_net(...)                    # 输出 64 维
+mu, logvar = post.chunk(2, dim=-1)           # 拆成 mu(32) + logvar(32)
+std = (0.5 * logvar).exp()                   # logvar → 标准差 σ
+z = mu + std * torch.randn_like(std)         # 采样出 z(32)</pre>
+
+<table>
+  <tr><th>量</th><th>符号</th><th>含义</th><th>UE 类比</th></tr>
+  <tr><td><b>mu</b></td><td>μ</td><td>分布中心（最可能的值）</td><td>目标<b>最可能的位置</b></td></tr>
+  <tr><td><b>logvar</b></td><td>log(σ²)</td><td>对数方差（网络实际输出的）</td><td>误差半径的<b>对数</b></td></tr>
+  <tr><td><b>std</b></td><td>σ</td><td>标准差（不确定度）</td><td><b>误差半径</b></td></tr>
+  <tr><td><b>z</b></td><td>—</td><td>采样出的<b>一个具体值</b></td><td>实际<b>射中的位置</b></td></tr>
+</table>
+
+<h2><span class="num">2</span>高斯分布长什么样</h2>
+<div class="fig"><div id="gauss"></div></div>
+<div class="cap">钟形曲线：mu 是峰顶（中心），σ 决定"胖瘦"；±1σ 内约 68%，±2σ 内约 95%</div>
+
+<h3>为什么输出 logvar 而不是 σ？</h3>
+<table>
+  <tr><th>做法</th><th>问题</th></tr>
+  <tr><td>直接输出 σ²（方差）</td><td>可能为负 → 非法 ❌</td></tr>
+  <tr><td>输出 |σ|（绝对值）</td><td>0 处不可导，梯度有问题 ❌</td></tr>
+  <tr><td>套 softplus</td><td>接近 0 时梯度饱和，不如 exp 稳</td></tr>
+  <tr><td><b>输出 log(σ²)</b></td><td>✅ <b>任意实数都合法</b>，exp 后自动为正；数值稳、梯度平滑</td></tr>
+</table>
+
+<h3>三者换算（数值例子）</h3>
+<table>
+  <tr><th>logvar</th><th>方差 σ² = exp(logvar)</th><th>标准差 σ = exp(0.5·logvar)</th><th>含义</th></tr>
+  <tr><td>−4.0</td><td>0.018</td><td>0.135</td><td>很确定（窄）</td></tr>
+  <tr><td>−2.0</td><td>0.135</td><td><b>0.368</b></td><td>中等</td></tr>
+  <tr><td>0.0</td><td>1.000</td><td>1.000</td><td>标准正态</td></tr>
+  <tr><td>+2.0</td><td>7.389</td><td>2.718</td><td>很不确定（宽）</td></tr>
+</table>
+
+<h2><span class="num">3</span>核心：采样公式在做什么</h2>
+
+<pre><span class="hl">z = mu + std * torch.randn_like(std)</span></pre>
+
+<p>把它拆成三步理解：</p>
+<table>
+  <tr><th>步骤</th><th>操作</th><th>说明</th></tr>
+  <tr><td>①</td><td><code>randn_like(std)</code></td><td>生成一组<b>标准正态随机数</b>（均值 0、标准差 1），形状和 std 一样（32 维）</td></tr>
+  <tr><td>②</td><td><code>std * 噪声</code></td><td>把噪声<b>放大/缩小</b>到模型想要的不确定度（std=0.1 → 抖动很小；std=2 → 抖动很大）</td></tr>
+  <tr><td>③</td><td><code>mu + ...</code></td><td>把抖动<b>平移</b>到分布中心 mu 附近 → 得到本次实际使用的 z</td></tr>
+</table>
+
+<div class="fig"><div id="formula"></div></div>
+<div class="cap">采样 = 标准噪声 × 不确定度(std) + 中心(mu) → 本次落点 z</div>
+
+<h3><code>torch.randn_like(std)</code> 到底是什么</h3>
+
+<table>
+  <tr><th>部分</th><th>含义</th></tr>
+  <tr><td><code>torch.randn</code></td><td><b>rand</b>om <b>n</b>ormal —— 生成<b>标准正态分布</b>（均值 0、标准差 1）的随机数</td></tr>
+  <tr><td><code>_like(std)</code></td><td>生成结果的<b>形状和 std 完全一样</b>（不用手写维度）</td></tr>
+</table>
+
+<p><b>一句话</b>：返回一个和 <code>std</code> 同形状的张量，每个元素独立从 <b>N(0, 1)</b> 里随机抽一个值。</p>
+
+<h4>真实输出（8 维示例，实测）</h4>
+<pre>std   shape : (1, 8)
+noise shape : (1, 8)                                  ← 自动匹配
+noise 值    : [1.541, -0.293, -2.179, 0.568,
+              -1.085, -1.399, 0.403, 0.838]
+noise 均值  : -0.201   （应接近 0）
+noise 标准差 :  1.265   （应接近 1，样本少所以有偏差）
+有负数吗    : True      ← 高斯的特点：可正可负</pre>
+
+<h4>别搞混：randn_like vs rand_like</h4>
+<table>
+  <tr><th>函数</th><th>分布</th><th>取值范围</th><th>实测值</th></tr>
+  <tr><td><b>randn_like</b></td><td><b>正态（高斯）</b></td><td>可正可负，集中在 0 附近（±1 内约 68%）</td><td><code>1.541, -0.293, -2.179, ...</code></td></tr>
+  <tr><td>rand_like</td><td>均匀</td><td><b>只有 0~1 的正数</b></td><td><code>0.698, 0.800, 0.161, ...</code></td></tr>
+</table>
+
+<div class="warn"><b>为什么必须是 randn，不能用 rand？</b><br>
+  采样公式 <code>z = mu + std × 噪声</code> 的数学前提是<b>噪声 ~ N(0,1)</b> ——
+  只有这样，算出来的 z 才服从正确的分布 <b>N(mu, std²)</b>。<br>
+  换成均匀噪声（rand），z 的分布就错了，模型的概率假设被破坏，训练与采样都会偏。</div>
+
+<h4>公式里的三个角色</h4>
+<pre>z = mu  +  std  ×  randn_like(std)
+    ↑       ↑        ↑
+   中心    幅度     随机方向
+   靶心   放大镜     掷骰子的结果</pre>
+<ul>
+  <li><b>噪声</b>：提供随机性（往左偏还是往右偏）</li>
+  <li><b>std</b>：控制偏多远（std=0.1 → 几乎不动；std=2 → 大幅偏离）</li>
+  <li><b>mu</b>：决定基准位置</li>
+</ul>
+
+<h4>两个实用细节</h4>
+<ul>
+  <li><b><code>_like</code> 的好处</b>：自动匹配形状。我们的 std 是 (B, 32)，噪声也是 (B, 32) ——
+    改 batch 或 latent 维度时<b>不用改这行代码</b>。</li>
+  <li><b>每次调用都重新随机</b>：所以 <code>sample=True</code> 时同一模型跑两次结果会略有不同；
+    需要可复现结果时用 <code>sample=False</code>（直接用 mu）或固定随机种子。</li>
+</ul>
+
+<h2><span class="num">4</span>手算一个 2 维例子</h2>
+
+<table>
+  <tr><th>量</th><th>维 0</th><th>维 1</th></tr>
+  <tr><td><code>mu</code>（中心）</td><td>1.0</td><td>−0.5</td></tr>
+  <tr><td><code>logvar</code></td><td>−2.0</td><td>0.0</td></tr>
+  <tr><td>→ <code>std</code> = exp(0.5·logvar)</td><td><b>0.3679</b></td><td><b>1.0</b></td></tr>
+  <tr><td>随机噪声（randn 抽到的）</td><td>+0.5</td><td>−1.2</td></tr>
+  <tr><td>→ 偏移量 std × 噪声</td><td>0.3679 × 0.5 = <b>+0.184</b></td><td>1.0 × (−1.2) = <b>−1.2</b></td></tr>
+  <tr><td><b>z = mu + 偏移</b></td><td><b>1.184</b></td><td><b>−1.700</b></td></tr>
+</table>
+
+<div class="note"><b>怎么读这个结果</b>：维 0 的 std 小（0.368）→ z 只偏离 mu 一点点（1.0 → 1.184，
+"比较确定"）；维 1 的 std 大（1.0）→ z 偏离很多（−0.5 → −1.7，"没把握"）。
+<b>32 维各自独立</b>，每维有自己的 mu 和 std。</div>
+
+<h2><span class="num">5</span>图解：采样本次"落在哪"</h2>
+<div class="fig"><div id="sample"></div></div>
+<div class="cap">同一个分布采 6 次：std 小 → 点都挤在 mu 附近；std 大 → 点散得很开</div>
+
+<div class="warn"><b>关键理解</b>：每次调用 <code>imagine()</code>（sample=True），
+噪声都是<b>重新随机生成</b>的 → 同一个模型跑两次，z 会略有不同 → 结果不完全一致。
+这就是为什么我们做评测时会用 <code>sample=False</code>（直接用 mu）来获得<b>可复现</b>的结果。</div>
+
+<h2><span class="num">6</span>为什么写成这个形式（重参数化）</h2>
+
+<p>直接"从分布里采样"这个动作<b>不可导</b>——梯度传不过去，模型就没法训练。</p>
+<pre>直接采样:   z ~ N(mu, std)          ← 不可导 ❌
+重参数化:   z = mu + std * 噪声      ← 噪声是常数，梯度可顺着 mu / std 回传 ✅</pre>
+<div class="key">写成 <code>mu + std × 噪声</code> 后，随机数变成"常数"，
+<b>mu 和 std 仍在网络里</b> → 梯度正常回传 → 这就是<b>重参数化技巧</b>（VAE 的核心）。</div>
+
+<h2><span class="num">7</span>回到模型：z 用在哪</h2>
+<pre>114  z = self._rsample(mu_q, lv_q)      # 训练/observe：从 posterior 采（看过图）
+181  z = self._rsample(mu_p, lv_p) ...  # imagine：从 prior 采（没看图）
+
+120  hz = torch.cat([h, z], dim=-1)     # z 和记忆拼起来
+121  emb_pred = self.obs_pred(hz)       # → 预测画面
+122  proprio_pred = self.proprio_pred(hz)   # → 预测本体
+126  object_pred = self.object_pred(hz)     # → 预测物体位置（v5）</pre>
+
+<div class="note"><b>一句话串起来</b>：posterior/prior 输出<span>一个分布</span>（mu + std），
+从里面<b>采样一次</b>得到 z，z 与记忆 h 拼起来交给下游预测头——
+<b>z 是"对当前世界状态的一次带不确定性的判断"</b>。</div>
+
+<script>
+/* ===== 图1：高斯曲线 ===== */
+(function(){
+  const W=900,H=280, cx=W/2, base=H-40;
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:900px">`;
+  const mu=0, sigma=1.6, peak=170;
+  const px=(x)=>cx + x*100;
+  const py=(y)=>base - y*peak;
+
+  // 网格
+  for(let x=-4;x<=4;x++){
+    s+=`<line x1="${px(x)}" y1="${base}" x2="${px(x)}" y2="${base+6}" stroke="#cfd8e3"/>`;
+    s+=`<text x="${px(x)}" y="${base+22}" text-anchor="middle" font-size="12" fill="#6b7c8d">${x>0?'+':''}${x}σ</text>`;
+  }
+  // 曲线
+  const pts=[];
+  for(let i=0;i<=120;i++){
+    const x=-4+8*i/120;
+    const y=Math.exp(-0.5*Math.pow(x,2));
+    pts.push(`${px(x).toFixed(1)},${py(y).toFixed(1)}`);
+  }
+  s+=`<polyline points="${pts.join(' ')}" fill="none" stroke="#8e44ad" stroke-width="3"/>`;
+
+  // ±1σ 阴影
+  const band=[];
+  for(let i=0;i<=60;i++){
+    const x=-1+2*i/60;
+    const y=Math.exp(-0.5*Math.pow(x,2));
+    band.push(`${px(x).toFixed(1)},${py(y).toFixed(1)}`);
+  }
+  s+=`<polygon points="${px(-1)},${base} ${band.join(' ')} ${px(1)},${base}" fill="#8e44ad" opacity="0.15"/>`;
+
+  // mu 线
+  s+=`<line x1="${px(0)}" y1="${base}" x2="${px(0)}" y2="${py(1.02)}" stroke="#2d7ff9" stroke-width="2.5"/>`;
+  s+=`<text x="${px(0)}" y="${py(1.05)}" text-anchor="middle" font-size="14" font-weight="bold" fill="#2d7ff9">mu</text>`;
+
+  // σ 标注
+  s+=`<line x1="${px(-1)}" y1="${base}" x2="${px(1)}" y2="${base}" stroke="#e74c3c" stroke-width="2"/>`;
+  s+=`<text x="${px(0)}" y="${base+40}" text-anchor="middle" font-size="13" fill="#e74c3c">±1σ 内约 68%</text>`;
+  s+=`<text x="${px(2.6)}" y="${py(0.35)}" font-size="13" fill="#6b7c8d">±2σ 内约 95%</text>`;
+  s+=`<text x="20" y="24" font-size="14" font-weight="bold" fill="#8e44ad">N(mu, σ²)</text>`;
+  s+=`</svg>`;
+  document.getElementById('gauss').innerHTML=s;
+})();
+
+/* ===== 图2：采样公式流程 ===== */
+(function(){
+  const W=900,H=170;
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:900px">`;
+  s+=`<defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#7f8c8d"/></marker></defs>`;
+  function box(x,y,w,h,fill,stroke,t1,t2){
+    s+=`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    s+=`<text x="${x+w/2}" y="${y+h/2+(t2?-2:5)}" text-anchor="middle" font-size="13" font-weight="bold" fill="#22303f">${t1}</text>`;
+    if(t2) s+=`<text x="${x+w/2}" y="${y+h/2+15}" text-anchor="middle" font-size="11" fill="#6b7c8d">${t2}</text>`;
+  }
+  box(20,55,150,60,'#e8f2ff','#2d7ff9','mu','中心（最可能）');
+  box(200,55,150,60,'#eafaf1','#27ae60','std','不确定度 σ');
+  box(380,55,160,60,'#fff8e6','#f5b041','randn 噪声','均值0 标准差1');
+  box(600,55,130,60,'#fdecea','#e74c3c','z','本次落点');
+  s+=`<text x="290" y="85" font-size="22" fill="#22303f">×</text>`;
+  s+=`<text x="560" y="85" font-size="22" fill="#22303f">+</text>`;
+  s+=`<text x="745" y="85" font-size="22" fill="#7f8c8d">=</text>`;
+  s+=`<line x1="540" y1="85" x2="598" y2="85" stroke="#7f8c8d" stroke-width="2" marker-end="url(#a)"/>`;
+  s+=`<text x="450" y="140" text-anchor="middle" font-size="14" fill="#22303f">z = mu + std × 噪声</text>`;
+  s+=`<text x="20" y="24" font-size="14" font-weight="bold" fill="#8e44ad">采样公式拆解</text>`;
+  s+=`</svg>`;
+  document.getElementById('formula').innerHTML=s;
+})();
+
+/* ===== 图3：数轴采样（std小 vs std大） ===== */
+(function(){
+  const W=900,H=230;
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:900px">`;
+  function row(y,mu,sigma,pts,label,color){
+    const x0=120, x1=800;
+    const px=(v)=>x0 + (v+4)/8*(x1-x0);
+    s+=`<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="#cfd8e3" stroke-width="2"/>`;
+    // mu
+    s+=`<line x1="${px(mu)}" y1="${y-14}" x2="${px(mu)}" y2="${y+14}" stroke="#2d7ff9" stroke-width="3"/>`;
+    s+=`<text x="${px(mu)}" y="${y-20}" text-anchor="middle" font-size="12" font-weight="bold" fill="#2d7ff9">mu</text>`;
+    // 采样点
+    pts.forEach((p,i)=>{
+      s+=`<circle cx="${px(p)}" cy="${y}" r="6" fill="${color}" opacity="0.8"/>`;
+      s+=`<text x="${px(p)}" y="${y+26}" text-anchor="middle" font-size="10" fill="#6b7c8d">${i+1}</text>`;
+    });
+    s+=`<text x="20" y="${y+5}" font-size="13" fill="#34495e">${label}</text>`;
+  }
+  row(60, 0, 0.4, [-0.3,0.2,-0.15,0.35,0.05,-0.25], 'std 小 (0.37)', '#27ae60');
+  row(160, 0, 2.0, [-1.8,2.4,-0.7,1.3,-2.2,0.9], 'std 大 (1.0~2.7)', '#e74c3c');
+  s+=`<text x="20" y="24" font-size="14" font-weight="bold" fill="#8e44ad">同一个 mu，采 6 次</text>`;
+  s+=`</svg>`;
+  document.getElementById('sample').innerHTML=s;
+})();
+</script>
+
+</body>
+</html>
