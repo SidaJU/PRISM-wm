@@ -122,6 +122,22 @@ def set_object_color(env, rgba=(0.0, 0.95, 0.95, 1.0)):
     return False
 
 
+def set_geom_color(env, geom_name, rgba):
+    """改任意几何体的颜色（OOD 泛化测试用，例如改地面 floor0 造出不同背景）。"""
+    try:
+        m = env.unwrapped.model
+    except Exception:
+        return False
+    for i in range(m.ngeom):
+        try:
+            if mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, i) == geom_name:
+                m.geom_rgba[i] = list(rgba)
+                return True
+        except Exception:
+            break
+    return False
+
+
 def collect_geom_meta(model):
     """一次性导出所有几何体的静态信息（名字/类型/尺寸/颜色）。
 
@@ -190,8 +206,12 @@ def collect(args):
                    width=args.size, height=args.size,
                    max_episode_steps=args.steps)
 
-    obj_colored = set_object_color(env)
-    print(f'  object0 recolored: {obj_colored} (灰方块->青色, 提升 64x64 下的可辨识度)')
+    obj_colored = set_object_color(env, rgba=args.obj_color)
+    print(f'  object0 recolored: {obj_colored} -> rgba={args.obj_color}')
+
+    if args.bg_color:
+        bg_ok = set_geom_color(env, 'floor0', args.bg_color)
+        print(f'  floor0 (背景) recolored: {bg_ok} -> rgba={args.bg_color}')
 
     # ---- 位姿导出（UE5 回放渲染用）----
     pose_model = None
@@ -338,6 +358,16 @@ if __name__ == '__main__':
     # 默认路径基于脚本位置解析，避免受当前工作目录影响
     ap.add_argument('--out', default=str(Path(__file__).resolve().parents[2] / 'prism' / 'data' / 'L0'))
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--obj-color', type=float, nargs=4, default=[0.0, 0.95, 0.95, 1.0],
+                    metavar=('R', 'G', 'B', 'A'),
+                    help='方块颜色 rgba（默认青色 0 0.95 0.95 1；'
+                         '改颜色可用于测试模型对颜色的泛化能力 / OOD 评测）')
+    ap.add_argument('--bg-color', type=float, nargs=4, default=None,
+                    metavar=('R', 'G', 'B', 'A'),
+                    help='背景（地面 floor0）颜色 rgba；不给则用环境默认。'
+                         '【实测未生效】floor0 的颜色由材质/渲染器缓存控制，'
+                         '改 geom_rgba 与 mat_rgba 均无效（与 --obj-color 不同）。'
+                         '若要测背景泛化，需改用后期处理或直接换场景')
     ap.add_argument('--epsilon', type=float, default=0.15, help='随机动作比例')
     ap.add_argument('--action-noise', type=float, default=0.05)
     ap.add_argument('--min-len', type=int, default=30, help='短于此长度的 episode 丢弃')
