@@ -156,13 +156,67 @@ noise 标准差 :  1.265   （应接近 1，样本少所以有偏差）
 噪声都是<b>重新随机生成</b>的 → 同一个模型跑两次，z 会略有不同 → 结果不完全一致。
 这就是为什么我们做评测时会用 <code>sample=False</code>（直接用 mu）来获得<b>可复现</b>的结果。</div>
 
-<h2><span class="num">6</span>为什么写成这个形式（重参数化）</h2>
+<h2><span class="num">6</span>重参数化（Reparameterization）到底是什么</h2>
 
-<p>直接"从分布里采样"这个动作<b>不可导</b>——梯度传不过去，模型就没法训练。</p>
-<pre>直接采样:   z ~ N(mu, std)          ← 不可导 ❌
-重参数化:   z = mu + std * 噪声      ← 噪声是常数，梯度可顺着 mu / std 回传 ✅</pre>
-<div class="key">写成 <code>mu + std × 噪声</code> 后，随机数变成"常数"，
-<b>mu 和 std 仍在网络里</b> → 梯度正常回传 → 这就是<b>重参数化技巧</b>（VAE 的核心）。</div>
+<h3>问题：采样这个动作不可导</h3>
+<pre>z ~ N(mu, std)      # 直接从分布里"抽一个值"</pre>
+<p>"抽"是随机的，z 和 mu/std 之间<b>没有可求导的函数关系</b> →
+梯度传不回去 → 你没法知道 mu 该调大还是调小 → <b>模型没法训练</b>。</p>
+
+<h3>解决：把随机性隔离成常数噪声</h3>
+<pre>z = mu + std * ε     # ε ~ N(0,1)，由 torch.randn_like 生成，当作常数</pre>
+<table>
+  <tr><th>量</th><th>是否可导</th><th>说明</th></tr>
+  <tr><td>ε（噪声）</td><td>❌ 不参与</td><td>随机生成，视作常数</td></tr>
+  <tr><td><b>mu、std</b></td><td>✅ <b>可导</b></td><td>在网络里，有梯度</td></tr>
+</table>
+<p>于是 z 变成 mu/std 的<b>确定性函数</b>，梯度链通了：
+<code>loss → z → mu/std → Encoder 参数</code> ✓</p>
+
+<h3>射箭类比</h3>
+<table>
+  <tr><th></th><th>含义</th></tr>
+  <tr><td>直接采样</td><td>蒙眼随机射箭 —— 全靠运气，<b>没法学习改进</b></td></tr>
+  <tr><td>重参数化</td><td>拆成「瞄准点 (mu) + 手抖幅度 (std) × 随机抖动 (ε)」——<br>瞄准点和手抖幅度<b>可以练</b>，随机性被隔离在 ε 里</td></tr>
+</table>
+
+<div class="note"><b>数学上等价</b>：若 ε ~ N(0,1)，则 <code>mu + std × ε</code> 恰好服从
+<b>N(mu, std²)</b> —— 分布没变，只是写法变了，但<b>变得可导了</b>。</div>
+
+<h3>VAE 又是什么</h3>
+<p><b>VAE = Variational Autoencoder（变分自编码器）</b>，2013 年提出的生成模型。</p>
+<table>
+  <tr><th>VAE 部件</th><th>作用</th><th><b>我们的 RSSM</b> 对应</th></tr>
+  <tr><td>Encoder</td><td>输入 → 输出<b>分布参数</b> (mu, logvar)</td><td>CNN → emb → <code>post_net</code> 输出 mu_q/lv_q ✓</td></tr>
+  <tr><td>采样</td><td><code>z = mu + std × ε</code></td><td><code>_rsample</code> ✓ <b>完全一样</b></td></tr>
+  <tr><td>Decoder</td><td>z → 重建输入</td><td><code>obs_pred</code> → <code>decoder</code> → 重建图像 ✓</td></tr>
+  <tr><td>Loss</td><td>重建误差 + KL</td><td>recon + emb + proprio + object + <b>KL</b> ✓</td></tr>
+</table>
+<p><b>所以：我们的 RSSM 本质上就是一个「时序版 VAE」</b>（VAE + GRU 记忆）。</p>
+
+<h4>和普通自编码器的区别</h4>
+<table>
+  <tr><th></th><th>普通自编码器</th><th>VAE</th></tr>
+  <tr><td>latent</td><td>一个<b>确定的点</b></td><td>一个<b>分布</b>（mu + std）</td></tr>
+  <tr><td>采样</td><td>无</td><td><b>有</b>（重参数化）</td></tr>
+  <tr><td>latent 空间</td><td>可能不连续、易过拟合</td><td><b>连续平滑</b>，可生成新样本</td></tr>
+  <tr><td>额外 loss</td><td>无</td><td><b>KL</b>（正则化 latent 空间）</td></tr>
+</table>
+
+<h4>我们的 KL 与标准 VAE 的 KL 有什么不同</h4>
+<table>
+  <tr><th></th><th>KL 的第二项（先验）</th></tr>
+  <tr><td>标准 VAE</td><td><code>KL(q(z|x) ‖ N(0,1))</code> —— 先验是<b>固定的标准正态</b></td></tr>
+  <tr><td><b>我们的 RSSM</b></td><td><code>KL(q(z|h,emb) ‖ p(z|h))</code> —— 先验是<b>学出来的、依赖记忆 h 的 prior</b></td></tr>
+</table>
+<p>这是时序模型的必需：<b>"下一帧该是什么状态"的先验应该依赖历史</b>，而不是固定不变。</p>
+<p style="font-size:13px;color:#6b7c8d">「变分 Variational」这个名字来源：真实后验 p(z|x) 算不出来，
+用一个可优化的分布 q 去<b>近似</b>它（变分推断）。</p>
+
+<div class="key"><b>两者关系（一句话）</b>：
+VAE 需要从分布采样 → 采样不可导 → 用<b>重参数化</b>把随机性隔离成常数噪声 →
+梯度能回传 → <b>VAE / RSSM 才能训练</b>。<br>
+代码里那一行 <code>z = mu + std * torch.randn_like(std)</code> 就是这套机制的落点。</div>
 
 <h2><span class="num">7</span>回到模型：z 用在哪</h2>
 <pre>114  z = self._rsample(mu_q, lv_q)      # 训练/observe：从 posterior 采（看过图）
