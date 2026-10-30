@@ -77,7 +77,36 @@ total += object_weight * object_mse
 
 ---
 
-## 3. 快速开始
+## 3. RL 与模型内决策（Actor-Critic / CEM）
+
+在 v5 世界模型之上落地 **model-based RL**：**Actor（策略）+ Critic（价值）**在**世界模型的想象**中训练，
+奖励由「预测物体位置 → 目标」的距离给出，**全程不需要真实环境交互**（Dreamer 风格）。
+
+![RL 学习曲线](prism/preview/rl_curve.png)
+
+*左：想象回报（越高越好）｜中：想象终点到目标的距离（越低越好）｜右：Critic loss。样本 #57，训练 400 轮。*
+
+### 决策方式对比（同一个世界模型）
+
+![决策方式对比](prism/preview/rl_decision_compare.png)
+
+| 方式 | 想象的终点 → 目标 | 说明 |
+|---|---|---|
+| 起点（不动） | 22.72 cm | — |
+| **CEM 规划**（采样搜索） | **0.40 cm** | ✅ 动作方向与真实目标方向一致 |
+| **RL 策略**（Actor-Critic 训练 400 轮） | 13.00 cm | ⚠️ 学到一点，未达规划水平 |
+| 随机搜索 256 条（最好） | 12.87 cm | 基线 |
+| 零动作 | 24.18 cm | 基线 |
+
+**结论**：模型具备可用动力学（不同动作推演出的终点差 **59cm**；CEM 能把物体从 22.72cm 推到 **0.40cm**），
+瓶颈在**策略优化**而非世界模型——策略梯度依赖模型在 OOD 区域的梯度方向，而采样规划不依赖梯度，因而更鲁棒。
+
+> 相关代码：`prism/model/agent.py`（Actor/Critic）、`prism/train/train_actor_critic.py`（想象中训练）、
+> `prism/tools/plan_cem.py`（CEM 规划）、`prism/tools/probe_action_sensitivity.py`（动作敏感性诊断）。
+
+---
+
+## 4. 快速开始
 
 ```bat
 :: 训练（参数集中在 prism/config.yaml，改完双击）
@@ -105,7 +134,7 @@ python prism/tools/analyze_imagine_error.py prism/runs/imagine_<时间戳>
 
 ---
 
-## 4. 项目结构
+## 5. 项目结构
 
 ```
 prism/
@@ -127,7 +156,7 @@ prism/
 
 ---
 
-## 5. 图解笔记（`prism/docs/`，本地打开）
+## 6. 图解笔记（`prism/docs/`，本地打开）
 
 | 笔记 | 内容 |
 |---|---|
@@ -145,7 +174,7 @@ prism/
 
 ---
 
-## 6. 已知问题与下一步
+## 7. 已知问题与下一步
 
 | 问题 | 状态 |
 |---|---|
