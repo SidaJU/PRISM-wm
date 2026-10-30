@@ -54,3 +54,15 @@ imagine:
   out_csv: prism/preview/imagine_steps.csv           # 每步结果数据（Excel 可开）
   out_json: prism/preview/imagine_curve.json         # 每步 MSE（JSON）
   out_curve_png: prism/preview/imagine_curve.png     # 误差曲线图
+
+# ---- RL：Actor-Critic（在世界模型的「想象」中训练，不需要真实环境交互）----
+rl:
+  iters: 300              # 训练迭代数
+  horizon: 10             # 每次想象推演多少步（诊断显示 10 步内模型对动作敏感且方向正确）
+  gamma: 0.99             # 折扣因子
+  lambda: 0.95            # λ-return 混合系数（0=纯 bootstrap，1=纯蒙特卡洛）
+  reward_scale: 1.0       # reward 缩放（reward = -物体到目标距离 × scale）
+  lr: 0.0001              # actor / critic 学习率
+  batch: 16               # 每次取多少条真实序列作为「想象起点」
+  hidden: 256             # actor / critic 隐层宽度
+  action_scale: 0.8       # 策略输出动作的幅度上限（诊断里 0.8 的持续动作能明显推动物体）

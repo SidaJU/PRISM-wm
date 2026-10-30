@@ -58,9 +58,11 @@ class L0Dataset(Dataset):
         gt_path = f.parent.parent / 'gt' / f.name
         with np.load(gt_path) as g:
             obj = g['object_state'][s:s + self.seq_len, 0:3].astype(np.float32)  # (T,3)
+            goal = g['desired_goal'].astype(np.float32)     # (3,) 本局目标位置（RL 算 reward 用）
 
         x = torch.from_numpy(img).float().permute(0, 3, 1, 2) / 255.0            # (T,3,H,W)
         p = torch.from_numpy(proprio).float()
         a = torch.from_numpy(act).float()
         return {'images': x, 'proprio': p, 'actions': a,
-                'object_pos': torch.from_numpy(obj)}
+                'object_pos': torch.from_numpy(obj),
+                'goal': torch.from_numpy(goal)}
