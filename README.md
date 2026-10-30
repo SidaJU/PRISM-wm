@@ -121,7 +121,7 @@ prism/
 │   ├── analyze_imagine_error.py   # 位置误差 vs 静止基线
 │   ├── plot_loss.py         # 训练曲线
 │   └── compare_train_loss.py      # 两次训练的 loss 对比
-├── docs/                    # 图解笔记（01~13，本地打开）
+├── docs/                    # 图解笔记（01~14，本地打开）
 └── runs/                    # 运行结果（时间戳归档，不入库）
 ```
 
@@ -141,6 +141,7 @@ prism/
 | `11_KL为什么不能太大或小.html` | KL 适中性、贯穿 observe→imagine |
 | `12_v5物体位置预测头.html` | v5 背景、逐行代码、流程图 |
 | `13_高斯分布与采样怎么理解.html` | 高斯、logvar、采样、重参数化、VAE |
+| `14_RL落地_Actor-Critic与规划.html` | **RL 是什么**、Actor 策略 / Critic 价值、在想象中训练、奖励设计、CEM 规划与效果对比 |
 
 ---
 
